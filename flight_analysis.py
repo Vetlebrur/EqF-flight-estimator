@@ -122,7 +122,7 @@ def plot_trajectory(samples: Iterable[FlightSample], output_path: Path) -> None:
     plt.close(fig)
 
 
-def plot_bearing(samples: Iterable[FlightSample], output_path: Path, stride: int = 200) -> None:
+def plot_bearing(samples: Iterable[FlightSample], output_path: Path, arrow_stride: int = 200) -> None:
     plt = _require_matplotlib()
     sampled = list(samples)
     if not sampled:
@@ -136,7 +136,7 @@ def plot_bearing(samples: Iterable[FlightSample], output_path: Path, stride: int
     up = [s.up_m for s in sampled]
     ax.plot(east, north, up, linewidth=0.9, color="0.65", label="Trajectory")
 
-    arrow_samples = sampled[:: max(stride, 1)]
+    arrow_samples = sampled[:: max(arrow_stride, 1)]
     u = [s.bearing_vector_enu[0] for s in arrow_samples]
     v = [s.bearing_vector_enu[1] for s in arrow_samples]
     w = [s.bearing_vector_enu[2] for s in arrow_samples]
@@ -225,7 +225,7 @@ def main() -> None:
     bearing_plot = args.output_dir / "nimbus24_bearing.png"
 
     plot_trajectory(samples, trajectory_plot)
-    plot_bearing(samples, bearing_plot, stride=args.bearing_stride)
+    plot_bearing(samples, bearing_plot, arrow_stride=args.bearing_stride)
 
     simulator = FlightReplaySimulator(samples)
     sample_count = sum(1 for _ in simulator.iter_samples())

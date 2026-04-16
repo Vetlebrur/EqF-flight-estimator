@@ -15,7 +15,7 @@ CSV_ROWS = (
 )
 
 
-class _Estimator:
+class _MockEstimator:
     def __init__(self):
         self.seen = []
 
@@ -43,7 +43,7 @@ class FlightAnalysisTests(unittest.TestCase):
             csv_path.write_text(CSV_HEADER + CSV_ROWS, encoding="utf-8")
             samples = load_flight_samples(csv_path)
 
-        estimator = _Estimator()
+        estimator = _MockEstimator()
         outputs = FlightReplaySimulator(samples).run(estimator)
 
         self.assertEqual(outputs, [0.0, 1.0])
