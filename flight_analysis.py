@@ -12,7 +12,7 @@ from urllib.request import urlretrieve
 
 DEFAULT_DATA_URL = (
     "https://raw.githubusercontent.com/icl-rocketry/iclr-data/"
-    "d37158ff7b6ef752a2f1fc046573f79b14b9bbf0/"
+    "main/"
     "20241011_NIMBUS24_Flight/20241011_NIMBUS24_Flight_FC_Data.csv"
 )
 
@@ -60,7 +60,7 @@ def download_csv(url: str, destination: Path) -> Path:
 
 def _parse_float(row: dict[str, str], key: str, default: float = 0.0) -> float:
     value = row.get(key, "")
-    if value is None or value == "":
+    if value == "":
         return default
     return float(value)
 

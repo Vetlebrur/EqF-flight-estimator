@@ -1,6 +1,6 @@
 # EqF-flight-estimator
 
-Using equivariant filter framework, can we create a good estimator for flight.
+Using equivariant filter framework, can we create a good estimator for flight?
 
 ## NIMBUS24 trajectory + bearing visualisation
 
