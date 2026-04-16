@@ -10,8 +10,8 @@ CSV_HEADER = (
     "roll(rad),pitch(rad),yaw(rad)\n"
 )
 CSV_ROWS = (
-    "0.0,-8.2,39.3,200000,0.0,0.0,0.0,0.0,0.1,0.2\n"
-    "1.0,-8.2,39.3,201000,10.0,5.0,-2.0,0.0,0.2,0.3\n"
+    "0.0,-8.2,39.3,200000,0.0,0.0,0.0,0.0,0.1,0.2\n",
+    "1.0,-8.2,39.3,201000,10.0,5.0,-2.0,0.0,0.2,0.3\n",
 )
 
 
@@ -28,7 +28,7 @@ class FlightAnalysisTests(unittest.TestCase):
     def test_load_flight_samples_parses_position_and_attitude(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "sample.csv"
-            csv_path.write_text(CSV_HEADER + CSV_ROWS, encoding="utf-8")
+            csv_path.write_text(CSV_HEADER + "".join(CSV_ROWS), encoding="utf-8")
 
             samples = load_flight_samples(csv_path)
 
@@ -40,7 +40,7 @@ class FlightAnalysisTests(unittest.TestCase):
     def test_replay_simulator_runs_estimator_over_full_flight(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "sample.csv"
-            csv_path.write_text(CSV_HEADER + CSV_ROWS, encoding="utf-8")
+            csv_path.write_text(CSV_HEADER + "".join(CSV_ROWS), encoding="utf-8")
             samples = load_flight_samples(csv_path)
 
         estimator = _MockEstimator()

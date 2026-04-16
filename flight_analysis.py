@@ -11,8 +11,7 @@ from typing import Iterable, List, Optional, Protocol
 from urllib.request import urlretrieve
 
 DEFAULT_DATA_URL = (
-    "https://raw.githubusercontent.com/icl-rocketry/iclr-data/"
-    "main/"
+    "https://raw.githubusercontent.com/icl-rocketry/iclr-data/main/"
     "20241011_NIMBUS24_Flight/20241011_NIMBUS24_Flight_FC_Data.csv"
 )
 
