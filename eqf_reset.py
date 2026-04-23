@@ -5,7 +5,6 @@ Implements reset methods for filter state management.
 """
 
 import numpy as np
-from typing import Optional
 from tg_eqf import TGEqF
 import SE23xxse23
 
@@ -54,7 +53,9 @@ def reset_sigma(
     Updates the filter covariance using Joseph form stabilization.
     """
     # TODO: Implement Sigma reset
-    pass
+    funny_expression = SE23xxse23.vee(SE23xxse23.exp(-self.Delta/2).Adjoint())
+
+    self.Sigma =  funny_expression @ self.Sigma @ funny_expression.T
 
 
 def reset_X(

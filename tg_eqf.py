@@ -28,7 +28,7 @@ class TGEqF:
         self.b = np.zeros(9)               # se(2,3) bias vector
         self.P = np.eye(18) * 0.1          # Covariance (18×18)
         self.time = 0.0                    # Current time
-        self.Delta = 
+        self.Delta = np.zeros((18,))       # 18x1
         Z3 = np.zeros((3,3))               # 3x3 matrix of zeroes
         Z9 = np.zeros((9,9))               # 9x9 matrix of zeroes
         I3 = np.eye(3)                     # 3x3 Identity
