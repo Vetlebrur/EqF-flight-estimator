@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 from scipy.linalg import expm
 from pylie import SO3, SE23
 
+# =============================================================================
+# Todo:
+# =============================================================================
+"""
+Make it actually work.
+Make sure the math is proper.
+Make sure that we are not doing things not described in the paper
+
+"""
 
 # =============================================================================
 # Constants
