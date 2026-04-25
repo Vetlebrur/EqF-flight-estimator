@@ -12,6 +12,80 @@ This follows Fornasier et al. (2022) for equivariant filter design.
 
 from pylie import SE23, SO3
 import numpy as np
+import scipy
+
+
+# =============================================================================
+# SE23 Left Jacobian and Helper Functions (from reference implementation)
+# =============================================================================
+
+def _J1(so3vec: np.ndarray) -> np.ndarray:
+    """SO3 Jacobian helper."""
+    angle = np.linalg.norm(so3vec)
+    if np.isclose(angle, 0.0):
+        return np.eye(3) + 0.5 * SO3.wedge(so3vec)
+
+    axis = so3vec / angle
+    s = np.sin(angle) / angle
+    c = (1 - np.cos(angle)) / angle
+    return s * np.eye(3) + (1 - s) * np.outer(axis, axis) + c * SO3.wedge(axis)
+
+
+def _Q1(arr: np.ndarray) -> np.ndarray:
+    """Q1 operator for SE23 Jacobian."""
+    phi = arr[0:3]
+    rho = arr[3:6]
+
+    rx = SO3.wedge(rho)
+    px = SO3.wedge(phi)
+
+    ph = np.linalg.norm(phi)
+    if np.isclose(ph, 0.0):
+        return rx
+
+    ph2 = ph * ph
+    ph3 = ph2 * ph
+    ph4 = ph3 * ph
+    ph5 = ph4 * ph
+
+    cph = np.cos(ph)
+    sph = np.sin(ph)
+
+    m1 = 0.5
+    m2 = (ph - sph) / ph3
+    m3 = (0.5 * ph2 + cph - 1.0) / ph4
+    m4 = (ph - 1.5 * sph + 0.5 * ph * cph) / ph5
+
+    t1 = rx
+    t2 = px @ rx + rx @ px + px @ rx @ px
+    t3 = px @ px @ rx + rx @ px @ px - 3.0 * px @ rx @ px
+    t4 = px @ rx @ px @ px + px @ px @ rx @ px
+
+    return m1 * t1 + m2 * t2 + m3 * t3 + m4 * t4
+
+
+def SE23LeftJacobian(se23vec: np.ndarray) -> np.ndarray:
+    """Compute the left Jacobian of SE(2,3)."""
+    if isinstance(se23vec, np.ndarray) and se23vec.ndim == 2:
+        se23vec = se23vec.flatten()
+
+    phi = se23vec[0:3]
+    rho = se23vec[3:6]
+    psi = se23vec[6:9]
+
+    if np.isclose(np.linalg.norm(phi), 0.0):
+        return np.eye(9) + 0.5 * SE23.adjoint(se23vec.reshape(9, 1) if se23vec.ndim == 1 else se23vec)
+
+    SO3_JL = _J1(phi)
+
+    J = np.zeros((9, 9))
+    J[0:3, 0:3] = SO3_JL
+    J[3:6, 3:6] = SO3_JL
+    J[6:9, 6:9] = SO3_JL
+    J[3:6, 0:3] = _Q1(np.concatenate([phi, rho]))
+    J[6:9, 0:3] = _Q1(np.concatenate([phi, psi]))
+
+    return J
 
 
 class SE23xxse23:
@@ -90,10 +164,10 @@ class SE23xxse23:
         # SE(2,3) multiplication: T2 * T1
         result.T = self.T * other.T
 
-        # Bias transformation: b2 + Ad_{T2^{-1}}[b1]
-        # Get adjoint matrix of inverse
-        T2_inv = self.T.inv()
-        Ad_T2_inv = self._adjoint_matrix(T2_inv)
+        # Bias transformation: b2 + Ad_{T2}[b1]
+        # Conjugation by T2 in matrix form: T2 @ β_other @ T2^{-1}
+        # Ad_T corresponds to conjugation by T_inv, so we need Ad_{T_inv} to conjugate by T
+        Ad_T2_inv = self._adjoint_matrix(self.T.inv())
 
         # Apply adjoint to other's bias
         result.b = self.b + Ad_T2_inv @ other.b
@@ -120,14 +194,10 @@ class SE23xxse23:
             Inverse element.
         """
         result = SE23xxse23()
-
         # Inverse of SE(2,3) part
         result.T = self.T.inv()
-
         # Bias part: -Ad_{T^{-1}}[b]
-        Ad_T_inv = self._adjoint_matrix(result.T)
-        result.b = -Ad_T_inv @ self.b
-
+        result.b = -self.T.Adjoint() @ self.b
         return result
 
     # =========================================================================
@@ -227,63 +297,32 @@ class SE23xxse23:
     # =========================================================================
     # Lie Algebra: Exponential and Logarithm
     # =========================================================================
-
+    
     @staticmethod
-    def exp(tangent_vec: np.ndarray) -> 'SE23xxse23':
-        """
-        Exponential map: tangent space → SE(2,3) ⋉ se(2,3).
-
-        For tangent vector [ξ; η], computes:
-          exp([ξ; η]) = (exp_SE23(ξ), η_transformed)
-
-        Args:
-            tangent_vec: 18-vector [ξ (9 components); η (9 components)].
-
-        Returns:
-            SE23xxse23 group element.
-        """
-        if not isinstance(tangent_vec, np.ndarray):
-            raise TypeError("tangent_vec must be numpy array")
-
-        if tangent_vec.size == 18 * 18:
-            # If 18×18 matrix form, convert to vector
-            tangent_vec = SE23xxse23.vee(tangent_vec)
-        elif tangent_vec.size != 18:
-            raise ValueError("tangent_vec must have 18 components")
-
-        xi = tangent_vec[0:9]
-        eta = tangent_vec[9:18]
+    def exp(u):
+        """Exponential map matching reference implementation using SE23LeftJacobian."""
+        xi  = u[:9]
+        eta = u[9:]
 
         result = SE23xxse23()
+        result.T = SE23.exp(xi.reshape(9, 1) if xi.ndim == 1 else xi)
 
-        # Exponential of pose part
-        result.T = SE23.exp(xi)
-
-        # Bias part: simple copy for now (first-order approximation)
-        # For higher precision, apply adjoint transformation
-        # b = eta (at first order)
-        # More precisely: integrate with adjoint action
-        result.b = eta
+        # Use SE23 Left Jacobian (matches reference implementation)
+        J_L = SE23LeftJacobian(xi)
+        result.b = J_L @ eta
 
         return result
 
-    def log(self) -> np.ndarray:
-        """
-        Logarithmic map: SE(2,3) ⋉ se(2,3) → tangent space.
+    def log(self):
+        """Logarithm map matching reference implementation using SE23LeftJacobian inverse."""
+        xi = self.T.log()
 
-        Returns:
-            18-vector [ξ (9 components); η (9 components)].
-        """
-        tangent = np.zeros(18)
+        # Use inverse of SE23 Left Jacobian (matches reference)
+        J_L = SE23LeftJacobian(xi)
+        J_L_inv = np.linalg.inv(J_L)
+        eta = J_L_inv @ self.b
 
-        # Logarithm of pose part
-        tangent[0:9] = self.T.log()
-
-        # Bias part: simple copy for first order
-        # More precisely: apply inverse adjoint transformation
-        tangent[9:18] = self.b
-
-        return tangent
+        return np.concatenate([xi, eta])
 
     # =========================================================================
     # Matrix Representations
@@ -432,12 +471,12 @@ class SE23xxse23:
         """Get gyroscope bias (3,)."""
         return self.b[0:3].copy()
 
-    def get_bias_velocity(self) -> np.ndarray:
-        """Get velocity bias (3,)."""
-        return self.b[3:6].copy()
-
     def get_bias_accel(self) -> np.ndarray:
         """Get accelerometer bias (3,)."""
+        return self.b[3:6].copy()
+
+    def get_bias_mu(self) -> np.ndarray:
+        """Get mu bias term (3,)."""
         return self.b[6:9].copy()
 
     # =========================================================================

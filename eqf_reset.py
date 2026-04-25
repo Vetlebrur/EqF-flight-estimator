@@ -32,13 +32,13 @@ def calculate_Delta(
     X_hat = SE23xxse23(self.T,self.b)
 
     # D_φ_c(id): Differential of state action at identity
-    reference_state = SE23xxse23.SE23xxse23.identity()
+    reference_state = SE23xxse23.identity()
     D_phi_c = X_hat.stateActionDiff(reference_state)
 
     # D_Θ_h: Differential of local chart (horizontal subspace)
     D_Theta_h = X_hat.localChartDiff(reference_state)
 
-    # Δ = (D_φ_c)^T D_Θ_h^{-1} μ
+    # Δ = pseudoinverse(D_φ_c) D_Θ_h^{-1} μ
     Delta = np.linalg.pinv(D_phi_c) @ np.linalg.inv(D_Theta_h) @ mu
 
     return Delta
@@ -70,9 +70,9 @@ def reset_X(
     Args:
         Delta: Update vector (18,) in Lie algebra.
     """
-    delta_group = SE23xxse23.SE23xxse23.exp(Delta)
-    X_hat = SE23xxse23(self.T,self.b)
-    X_hat = delta_group * X_hat
+    delta_group = SE23xxse23.exp(Delta)
+    X_hat = SE23xxse23(self.T, self.b)
+    X_hat = delta_group * X_hat  # Group composition
     self.T = X_hat.T
     self.b = X_hat.b
 
@@ -84,19 +84,19 @@ def reset(
     """
     Perform full equivariant filter reset step.
 
-    Implements: Δ = (D_φ_c)^T D_Θ_b^{-1} μ and updates state.
+    Implements: Δ = (D_φ_c)^T D_Θ_h^{-1} μ and updates state.
 
     Args:
         mu: Innovation vector (18,).
     """
-    # Compute innovation lift: Δ = (D_φ_c)^T D_Θ_b^{-1} μ
-    self.Delta = calculate_Delta(mu)
+    # Compute innovation lift: Δ = (D_φ_c)^T D_Θ_h^{-1} μ
+    self.Delta = self.calculate_Delta(mu)
 
     # Update state
-    reset_X()
+    self.reset_X(self.Delta)
 
     # Reset covariance
-    reset_sigma()
+    self.reset_sigma()
 
 
 # Attach methods to TGEqF

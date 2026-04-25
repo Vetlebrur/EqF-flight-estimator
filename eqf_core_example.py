@@ -16,7 +16,7 @@ class FilterStateEqFPyLie:
 
     State: (T, b) where:
       - T ∈ SE(2,3): extended pose (from pylie)
-      - b ∈ ℝ^9: bias vector [gyro_bias, velocity_bias, accel_bias]
+      - b ∈ ℝ^9: bias vector [gyro_bias, accel_bias, mu_bias]
       - Σ ∈ ℝ^{18×18}: covariance matrix
     """
 
@@ -104,9 +104,9 @@ class FilterStateEqFPyLie:
     def extract_bias_components(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract bias components"""
         b_gyro = self.b[0:3]
-        b_velocity = self.b[3:6]
-        b_accel = self.b[6:9]
-        return b_gyro, b_velocity, b_accel
+        b_accel = self.b[3:6]
+        b_mu = self.b[6:9]
+        return b_gyro, b_accel, b_mu
 
 
 # =============================================================================

@@ -209,3 +209,9 @@ __marimo__/
 data/
 outputs/
 .claude/
+# Reference repository
+eqf-reference/
+
+# Generated outputs
+eqf_estimates.csv
+eqf_estimates_visualization.png

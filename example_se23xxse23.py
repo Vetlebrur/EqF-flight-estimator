@@ -189,14 +189,14 @@ def example_filter_state():
 
     # Set initial biases (typical IMU values)
     state.b[0:3] = np.array([0.001, -0.0005, 0.0015])  # Gyro bias (rad/s)
-    state.b[3:6] = np.array([0.0, 0.0, 0.0])            # Velocity bias (m/s)
-    state.b[6:9] = np.array([0.05, -0.03, 0.04])        # Accel bias (m/s²)
+    state.b[3:6] = np.array([0.05, -0.03, 0.04])        # Accel bias (m/s²)
+    state.b[6:9] = np.array([0.0, 0.0, 0.0])            # Mu bias (structural term)
 
     print(f"Filter state initialized:")
     print(f"  Pose: SE(2,3)")
     print(f"  Gyro bias: {state.get_bias_gyro()}")
-    print(f"  Velocity bias: {state.get_bias_velocity()}")
     print(f"  Accel bias: {state.get_bias_accel()}")
+    print(f"  Mu bias: {state.get_bias_mu()}")
 
     # Extract components
     R = state.get_rotation()
