@@ -22,9 +22,18 @@ class TGEqF:
     wedge/vee operators.
     """
 
-    def __init__(self):
-        """Initialize filter state."""
-        self.T = SE23.identity()           # SE(2,3) pose
+    def __init__(self, initial_quaternion=None, initial_position=None, initial_velocity=None):
+        """Initialize filter state with identity (rocket pointing up).
+
+        The filter tracks perturbations from nominal state.
+        Initial FC state (quaternion, position, velocity) is applied via group action in renderer.
+
+        Args:
+            initial_quaternion: Ignored (for API compatibility)
+            initial_position: Ignored (for API compatibility)
+            initial_velocity: Ignored (for API compatibility)
+        """
+        self.T = SE23.identity()
         self.b = np.zeros(9)               # se(2,3) bias vector
 
         # Initialize covariance matching reference implementation
