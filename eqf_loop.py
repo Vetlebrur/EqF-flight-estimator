@@ -16,17 +16,21 @@ def main():
     print("Tangent-Group Equivariant Filter (TGEqF) - Flight Data Processing")
     print("=" * 70)
 
-    # Initialize filter
-    filter = TGEqF()
-    print(f"\nFilter initialized at t=0")
-    print(f"  Pose (SE23): T = I")
-    print(f"  Bias (se23): b = 0")
-    print(f"  Covariance: P = {np.linalg.norm(filter.P):.4f} (Frobenius norm)")
-
     # Initialize data processor
     csv_path = r"data\20241011_NIMBUS24_Flight_FC_Data.csv"
     processor = UpdateProcessor(csv_path)
     print(f"\nLoading flight data from: {csv_path}")
+
+    # Skip first row to sync with processor
+    _ = processor.get_next_row()
+
+    # Initialize filter with identity (rocket pointing up)
+    # FC's initial state is applied via group action in renderer
+    filter = TGEqF()
+    print(f"\nFilter initialized at t=0 with identity state")
+    print(f"  Rotation: identity (rocket pointing up)")
+    print(f"  Position: origin, Velocity: zero")
+    print(f"  Covariance: P = {np.linalg.norm(filter.P):.4f} (Frobenius norm)")
 
     # Initialize CSV writer for filter estimates
     output_csv = Path("eqf_estimates.csv")

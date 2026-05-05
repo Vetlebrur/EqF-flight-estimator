@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
+from pylie import SE23, SO3
 
 
 # =============================================================================
@@ -112,28 +113,64 @@ def _setup_3d_ax(ax, title):
 # Data Loading
 # =============================================================================
 
-def load_eqf_estimates(path: Path) -> tuple:
-    """Load EqF estimate CSV and extract pose, velocity, and bias."""
+def load_eqf_estimates(path: Path, initial_state=None) -> tuple:
+    """Load EqF estimate CSV and extract pose, velocity, and bias with state extraction transformation.
+
+    Applies group action: ξ̂(t) = X̂(t) ⊳ ξ_0 where ξ_0 is initial state.
+    Then extracts: (T_composed, Ad_{T_composed^{-1}}(-b_composed))
+    """
     times, positions, velocities, rotations, biases = [], [], [], [], []
 
     with path.open(newline='') as f:
-        for row in csv.DictReader(f):
-            times.append(float(row['t']))
-            positions.append([float(row['px']), float(row['py']), float(row['pz'])])
-            velocities.append([float(row['vx']), float(row['vy']), float(row['vz'])])
+        for row_idx, row in enumerate(csv.DictReader(f)):
+            try:
+                times.append(float(row['t']))
 
-            R = np.array([
-                [float(row['r00']), float(row['r01']), float(row['r02'])],
-                [float(row['r10']), float(row['r11']), float(row['r12'])],
-                [float(row['r20']), float(row['r21']), float(row['r22'])],
-            ])
-            rotations.append(R)
+                # Extract filter state X̂(t) = (T̂, b̂) from CSV
+                R_hat = np.array([
+                    [float(row['r00']), float(row['r01']), float(row['r02'])],
+                    [float(row['r10']), float(row['r11']), float(row['r12'])],
+                    [float(row['r20']), float(row['r21']), float(row['r22'])],
+                ])
+                v_hat = np.array([float(row['vx']), float(row['vy']), float(row['vz'])])
+                p_hat = np.array([float(row['px']), float(row['py']), float(row['pz'])])
+                T_hat = SE23(SO3(R_hat), v_hat, p_hat)
 
-            biases.append([
-                float(row['b_gx']), float(row['b_gy']), float(row['b_gz']),
-                float(row['b_ax']), float(row['b_ay']), float(row['b_az']),
-                float(row['b_mu_x']), float(row['b_mu_y']), float(row['b_mu_z']),
-            ])
+                b_hat = np.array([
+                    float(row['b_gx']), float(row['b_gy']), float(row['b_gz']),
+                    float(row['b_ax']), float(row['b_ay']), float(row['b_az']),
+                    float(row['b_mu_x']), float(row['b_mu_y']), float(row['b_mu_z']),
+                ])
+
+                # Apply group action: ξ̂ = X̂ * ξ_0 (semi-direct product composition)
+                if initial_state is not None:
+                    T_0, b_0 = initial_state
+                    # Composition: (T̂, b̂) * (T_0, b_0) = (T̂ T_0, b̂ + Ad_{T̂^{-1}}(b_0))
+                    T_composed = T_hat * T_0
+                    T_hat_inv = T_hat.inv()
+                    b_composed = b_hat + T_hat_inv.Adjoint() @ b_0
+                else:
+                    T_composed = T_hat
+                    b_composed = b_hat
+
+                # Extract state: ξ = (Ĉ, Ad_{Ĉ^{-1}}(-γ))
+                # where Ĉ = T_composed and γ = b_composed
+                T_inv = T_composed.inv()
+                b_extracted = T_inv.Adjoint() @ (-b_composed)
+
+                # Store extracted pose components
+                R_final = T_composed.R().as_matrix()
+                v_final = T_composed.x().as_vector()
+                p_final = T_composed.w().as_vector()
+
+                positions.append(p_final)
+                velocities.append(v_final)
+                rotations.append(R_final)
+                biases.append(b_extracted)
+
+            except (ValueError, KeyError, AttributeError) as e:
+                print(f"Warning: Row {row_idx} has parsing error: {e}")
+                break
 
     return np.array(times), np.array(positions), np.array(velocities), rotations, np.array(biases)
 
@@ -217,8 +254,55 @@ def main():
         print(f"Error: {ESTIMATE_CSV} not found. Run eqf_loop.py first.")
         return
 
+    # Load initial state from FC data
+    initial_state = None
+    if FC_CSV.exists():
+        with FC_CSV.open(newline='') as f:
+            fc_reader = csv.DictReader(f)
+            first_row = next(fc_reader)
+
+            # Extract initial quaternion and convert to rotation matrix
+            q0 = float(first_row['q0'])
+            q1 = float(first_row['q1'])
+            q2 = float(first_row['q2'])
+            q3 = float(first_row['q3'])
+
+            # Normalize quaternion
+            q = np.array([q0, q1, q2, q3])
+            q = q / np.linalg.norm(q)
+            q0, q1, q2, q3 = q
+
+            # Convert to rotation matrix
+            R_mat = np.array([
+                [1 - 2*(q2**2 + q3**2),     2*(q1*q2 - q0*q3),     2*(q1*q3 + q0*q2)],
+                [    2*(q1*q2 + q0*q3), 1 - 2*(q1**2 + q3**2),     2*(q2*q3 - q0*q1)],
+                [    2*(q1*q3 - q0*q2),     2*(q2*q3 + q0*q1), 1 - 2*(q1**2 + q2**2)]
+            ])
+            # Orthogonalize
+            U, _, Vt = np.linalg.svd(R_mat)
+            R_mat = U @ Vt
+
+            # Extract initial position and velocity
+            p_0 = np.array([
+                float(first_row['pn(m)']),
+                float(first_row['pe(m)']),
+                float(first_row['pd(m)']),
+            ])
+            v_0 = np.array([
+                float(first_row['vn(m)']),
+                float(first_row['ve(m)']),
+                float(first_row['vd(m)']),
+            ])
+
+            # Create SE(2,3) initial state
+            T_0 = SE23(SO3(R_mat), v_0, p_0)
+            b_0 = np.zeros(9)  # Initial bias assumed zero
+
+            initial_state = (T_0, b_0)
+            print(f"Loaded initial state from FC: position={p_0}, velocity={v_0}")
+
     print(f"Loading estimates from {ESTIMATE_CSV}...")
-    times, positions, velocities, rotations, biases = load_eqf_estimates(ESTIMATE_CSV)
+    times, positions, velocities, rotations, biases = load_eqf_estimates(ESTIMATE_CSV, initial_state)
 
     print(f"Loaded {len(times)} estimates")
     print(f"Time range: {times[0]:.2f}s to {times[-1]:.2f}s")
