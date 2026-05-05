@@ -2,7 +2,6 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
 
 
@@ -17,11 +16,7 @@ def safe_normalize(vec, epsilon=1e-8):
 # =============================================================================
 # Configuration
 # =============================================================================
-USE_STATIC_DATA = False  # Set to True to plot static data, False for flight data
-                         # - False: plots real NIMBUS24 flight data
-                         # - True:  plots truly_static_30s.csv (zero gyro/accel)
-                         # - "gravity": plots gravity_only_30s.csv (ax=1g, rest=0)
-                         # - "combined": plots static (30s) + full flight (~150s)
+USE_STATIC_DATA = False  # False = real flight; True/string = static/gravity/combined data
 
 # =============================================================================
 # Constants
@@ -171,9 +166,9 @@ fc_att_t = np.array(fc_att_t)
 
 # Unwrap FC attitude to match filter representation
 if len(fc_att) > 0:
-    fc_att[:, 0] = np.unwrap(fc_att[:, 0], discont=np.pi)  # Roll
-    fc_att[:, 1] = np.unwrap(fc_att[:, 1], discont=np.pi)  # Pitch
-    fc_att[:, 2] = np.unwrap(fc_att[:, 2], discont=np.pi)  # Yaw
+    fc_att[:, 0] = np.unwrap(fc_att[:, 0], discont=np.pi)
+    fc_att[:, 1] = np.unwrap(fc_att[:, 1], discont=np.pi)
+    fc_att[:, 2] = np.unwrap(fc_att[:, 2], discont=np.pi)
 
 fc_accel = np.array(fc_accel) if fc_accel else np.empty((0, 3))
 fc_accel_t = np.array(fc_accel_t)
@@ -221,14 +216,12 @@ if invalid_count > len(R_list) * 0.1:  # More than 10% invalid
     print(f"Warning: {invalid_count}/{len(R_list)} rotation matrices are invalid (det≠1 or not orthogonal)")
     print("This suggests incorrect orthonormalization in the filter upstream")
 
-# Extract Euler angles directly from output (columns 16-18, already computed in filter)
-# DO NOT recompute from rotation matrix - use the pre-computed values
+# Extract Euler angles from output (columns 16-18)
 roll_arr = out[:, 16].copy()
 pitch_arr = out[:, 17].copy()
 yaw_arr = out[:, 18].copy()
 
-# Apply unwrap to track continuous rotation (handles multiple 2π revolutions)
-# This is necessary to see if the rocket actually rotated 540° vs just showing 180°
+# Unwrap to track continuous rotation across multiple 2π revolutions
 roll_arr = np.unwrap(roll_arr, discont=np.pi)
 pitch_arr = np.unwrap(pitch_arr, discont=np.pi)
 yaw_arr = np.unwrap(yaw_arr, discont=np.pi)

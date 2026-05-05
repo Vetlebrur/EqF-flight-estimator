@@ -3,22 +3,10 @@
 import os
 import sys
 from pathlib import Path
-from enum import Enum
 
 import numpy as np
 from scipy.linalg import expm
 from pylie import SO3, SE23, R3
-
-# =============================================================================
-# Todo:
-# =============================================================================
-"""
-Make it actually work.
-Make sure the math is proper.
-Make sure that we are not doing things not described in the paper
-
-"""
-
 
 ref_path = Path(__file__).parent / "eqf-reference"
 sys.path.insert(0, str(ref_path))
@@ -26,15 +14,12 @@ utils_path = ref_path / "Utils"
 sys.path.insert(0, str(utils_path))
 from matrix_math import *
 from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, grp_adj, local_coords, local_coords_inv, stateActionDiff
+
 # =============================================================================
 # Configuration
 # =============================================================================
 
-USE_STATIC_DATA = False  # "combined" = static + flight, False = flight only
-                         # - False: runs on real NIMBUS24 flight data
-                         # - True:  runs on truly_static_30s.csv (zero gyro/accel)
-                         # - "gravity": runs on gravity_only_30s.csv (ax=1g, rest=0)
-                         # - "combined": runs on static (30s) + full flight (~150s)
+USE_STATIC_DATA = False  # False = real flight; True/string = static/gravity/combined data
 
 GNSS_UPDATE_FREQ_HZ = 1.0   # GNSS update frequency (Hz) — update every 1/f seconds
 GNSS_POS_ONLY = False
@@ -206,25 +191,19 @@ class TGEqF:
         if self.attitude_initialized or self.t_prev is None:
             return
 
-        if True:  # Accept any valid data
-            # FC initial attitude (from 20241011_NIMBUS24_Flight_FC_Data.csv first row)
-            roll_fc = -1.043745  # radians
-            pitch_fc = 1.478157  # radians
-            yaw_fc = 2.772124    # radians
+        # FC initial attitude (from 20241011_NIMBUS24_Flight_FC_Data.csv first row)
+        roll_fc = -1.043745  # radians
+        pitch_fc = 1.478157  # radians
+        yaw_fc = 2.772124    # radians
 
-            # Convert to rotation matrix using intrinsic Z-Y-X rotations
-            R_init = self.euler_to_rotation_matrix(roll_fc, pitch_fc, yaw_fc)
+        # Convert to rotation matrix using intrinsic Z-Y-X rotations
+        R_init = self.euler_to_rotation_matrix(roll_fc, pitch_fc, yaw_fc)
 
-            # Verify orthogonality
-            R_check = R_init.T @ R_init
-            is_orthogonal = np.allclose(R_check, np.eye(3), atol=1e-6)
-            det_R = np.linalg.det(R_init)
+        # Create SE(2,3) with FC's initial rotation
+        se23_init = SE23(R_init)
+        self.X_hat = SymGroup(se23_init, np.zeros((5, 5)))
 
-            # Create SE(2,3) with FC's initial rotation
-            se23_init = SE23(R_init)
-            self.X_hat = SymGroup(se23_init, np.zeros((5, 5)))
-
-            self.attitude_initialized = True
+        self.attitude_initialized = True
 
     def __init__(self):
         """Initialize filter state and covariance matrices."""
@@ -349,16 +328,6 @@ class TGEqF:
         U.mu = xi_hat.b[6:9, 0:1]
         U.tau = np.zeros((9, 1))
 
-
-        # Debug: Print input and state before propagation
-        #if int(t * 10) % 10 == 0:  # Every 1 second
-        #    p_before = self.X_hat.B.w().as_vector().flatten()
-        #    v_before = self.X_hat.B.x().as_vector().flatten()
-        #    b_before = xi_hat.b.flatten()
-        #    print(f"[BEFORE] t={t:.2f}s | gyro={gyro.flatten()} | accel={accel.flatten()}")
-        #    print(f"         p=[{p_before[0]:7.1f}, {p_before[1]:7.1f}, {p_before[2]:7.1f}]m | v=[{v_before[0]:6.2f}, {v_before[1]:6.2f}, {v_before[2]:6.2f}]m/s")
-        #    print(f"         b_mu={b_before[6:9]}")
-
         lift = calculate_lift(self.xi_hat(), U)
 
         self.X_hat = self.X_hat * SymGroup.exp(lift * dt)
@@ -381,15 +350,6 @@ class TGEqF:
 
         self.t_prev = t
         self.t_last_imu = t
-
-        # Debug: Print filter state periodically
-        #if int(t * 10) % 10 == 0:  # Every 1 second
-        #    p = self.X_hat.B.w().as_vector().flatten()
-        #    v = self.X_hat.B.x().as_vector().flatten()
-        #    b = self.xi_hat().b.flatten()
-        #    trace_P = np.trace(self.Sigma)
-        #    print(f"[AFTER]  t={t:.2f}s | p=[{p[0]:7.1f}, {p[1]:7.1f}, {p[2]:7.1f}]m | v=[{v[0]:6.2f}, {v[1]:6.2f}, {v[2]:6.2f}]m/s")
-        #    print(f"         b_mu={b[6:9]} | P_trace={trace_P:.2e}\n")
 
     # =========================================================================
     # Update functions
@@ -556,17 +516,13 @@ class TGEqF:
 
     def output_row(self, t):
         """Extract state as output row [t, p, v, R, euler, b_gyro, b_accel]."""
-        # Get full composed state (group action applied to reference state)
         xi_hat = self.xi_hat()
         R = xi_hat.T.R().as_matrix()
         v = col(xi_hat.T.x().as_vector())
         p = col(xi_hat.T.w().as_vector())
         b = xi_hat.b  # 9-vector: [b_gyro(3); b_accel(3); b_mu(3)]
 
-        # Compute Euler angles (roll, pitch, yaw) from rotation matrix
-        # FIXED: SE23.exp() produces intrinsic (body-frame) rotations, not extrinsic
-        # For body-frame Z-Y-X rotations: R = Rx(roll) * Ry(pitch) * Rz(yaw)
-        # Correct extraction:
+        # Extract Euler angles using intrinsic Z-Y-X rotation convention
         roll_raw = np.arctan2(R[2, 1], R[2, 2])
         pitch_raw = np.arcsin(np.clip(-R[2, 0], -1, 1))
         yaw_raw = np.arctan2(R[1, 0], R[0, 0])
@@ -631,11 +587,6 @@ class TGEqF:
 
 
         return At
-
-    def calculate_B(self, u : InputSpace) -> np.ndarray:
-        Bt = np.block([self.X_hat.B.Adjoint(),np.zeros((9,9))],
-                      [self.X_hat.B.Adjoint(),np.zeros((9,9))])
-        return Bt
 
     def calculate_C_mag(self) -> np.ndarray:
         Ct = np.zeros((3, 18))
@@ -783,9 +734,8 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
     gnss_count = 0
     last_progress_t = 0
 
-    # ICM_20608 gyro scale factor: raw ADC counts to degrees/sec
-    # Then convert to rad/s: deg/s * pi/180. This took way too long to find out
-    gyro_scale_factor =  (np.pi / 180.0) * (2000.0 / 32768.0) # raw ADC -> rad/s
+    # ICM_20608 gyro scale factor: raw ADC counts to rad/s
+    gyro_scale_factor =  (np.pi / 180.0) * (2000.0 / 32768.0)
 
     for i, row in enumerate(raw):
         t = row[_C["t"]]
@@ -806,9 +756,6 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
 
         # Apply hard-iron bias correction (remove uncalibrated offset)
         mag = mag_raw - MAG_HARD_IRON_BIAS
-
-        # Negate Y axis (empirically improves heading alignment)
-        #mag[1] = -mag[1]
 
         # Normalize to unit length
         mag_norm = np.linalg.norm(mag)
@@ -926,13 +873,4 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
 
 
 if __name__ == "__main__":
-    if USE_STATIC_DATA:
-        print("=" * 60)
-        print("Running on STATIC DATA (30s initial conditions)")
-        print("=" * 60)
-        run()  # Uses static data file
-    else:
-        print("=" * 60)
-        print("Running on REAL FLIGHT DATA")
-        print("=" * 60)
-        run()  # Uses real flight data
+    run()

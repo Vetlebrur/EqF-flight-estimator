@@ -209,8 +209,10 @@ __marimo__/
 data/
 outputs/
 .claude/
-# Reference repository
+# Reference repositories and submodules
 eqf-reference/
+Ricardo-PickleRick/
+TG-EqF-VN-200/
 
 # Generated outputs
 eqf_estimates.csv
