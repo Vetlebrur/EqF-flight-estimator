@@ -18,6 +18,9 @@ import numpy as np
 TARGET_FPS = 25
 FC_CSV = Path("data/20241011_NIMBUS24_Flight_FC_Data.csv")
 
+# Default to combined data (static + flight)
+DEFAULT_EQF_CSV = Path("outputs/tg_eqf_output.csv")
+
 # FC CSV column indices
 _FC_T = 0
 _FC_ROLL = 29
@@ -130,13 +133,13 @@ def _update_wire(lines, segs, R):
 
 
 def _setup_3d_ax(ax, title):
-    """Configure 3D axis limits and labels."""
+    """Configure 3D axis limits and labels (ENU frame)."""
     ax.set_xlim(-3, 3)
     ax.set_ylim(-3, 3)
     ax.set_zlim(-3, 3)
-    ax.set_xlabel("East")
-    ax.set_ylabel("North")
-    ax.set_zlabel("Up")
+    ax.set_xlabel("East [m]")
+    ax.set_ylabel("North [m]")
+    ax.set_zlabel("Up [m]")
     ax.set_title(title)
 
 
@@ -145,33 +148,45 @@ def _setup_3d_ax(ax, title):
 # =============================================================================
 
 def load_eqf_csv(path: Path) -> list[dict]:
-    """Load EqF output CSV and convert rotation matrix to Euler angles."""
+    """Load EqF output CSV with position, velocity, and Euler angles."""
     rows = []
     with path.open(newline="") as f:
         for raw in csv.DictReader(f):
             row = {k: float(v) for k, v in raw.items()}
 
-            if "r00" in row:
-                R = np.array(
-                    [
-                        [row["r00"], row["r01"], row["r02"]],
-                        [row["r10"], row["r11"], row["r12"]],
-                        [row["r20"], row["r21"], row["r22"]],
-                    ]
-                )
-                row["yaw(rad)"], row["pitch(rad)"], row["roll(rad)"] = R_to_euler(R)
-
+            # Map position columns
             if "px" in row:
                 row["pn(m)"] = row["px"]
                 row["pe(m)"] = row["py"]
                 row["pd(m)"] = row["pz"]
+
+            # Map velocity columns
             if "vx" in row:
                 row["vn(m/s)"] = row["vx"]
                 row["ve(m/s)"] = row["vy"]
                 row["vd(m/s)"] = row["vz"]
+
+            # Map time column
             if "t" in row and "time(s)" not in row:
                 row["time(s)"] = row["t"]
+
+            # Euler angles already in CSV (roll, pitch, yaw in radians, unwrapped)
+            # Rename columns to match expected format
+            if "roll" in row:
+                row["roll(rad)"] = row["roll"]
+            else:
+                row["roll(rad)"] = 0.0
+            if "pitch" in row:
+                row["pitch(rad)"] = row["pitch"]
+            else:
+                row["pitch(rad)"] = 0.0
+            if "yaw" in row:
+                row["yaw(rad)"] = row["yaw"]
+            else:
+                row["yaw(rad)"] = 0.0
+
             row.setdefault("std_pn(m)", 0.0)
+
             rows.append(row)
     return rows
 
@@ -261,16 +276,20 @@ def select_render_indices(rows, target_fps):
 # =============================================================================
 
 def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> None:
-    """Animate EqF filter output with FC attitude comparison and 3D trajectory."""
+    """Animate EqF filter output with FC attitude comparison and 3D trajectory (ENU frame)."""
+    # Load NED data
     pn_eqf = [r["pn(m)"] for r in rows]
     pe_eqf = [r["pe(m)"] for r in rows]
-    pu_eqf = [-r["pd(m)"] for r in rows]
+    pd_eqf = [r["pd(m)"] for r in rows]
 
     pn_fc, pe_fc, pd_fc = load_fc_trajectory(fc_path)
-    pu_fc = -pd_fc
 
     gps_n, gps_e, gps_d = load_gps_trajectory(fc_path)
-    gps_u = -gps_d
+
+    # Convert from NED to ENU: negate down (z) to get up
+    pu_eqf = np.array([-d for d in pd_eqf])  # Up = -Down
+    pu_fc = np.array([-d for d in pd_fc])
+    gps_u = np.array([-d for d in gps_d])
 
     render_indices = select_render_indices(rows, TARGET_FPS)
     render_rows = [rows[i] for i in render_indices]
@@ -295,7 +314,7 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
     ax_traj.set_xlabel("East [m]")
     ax_traj.set_ylabel("North [m]")
     ax_traj.set_zlabel("Up [m]")
-    ax_traj.set_title("3D Trajectory Comparison")
+    ax_traj.set_title("3D Trajectory Comparison (ENU)")
 
     (traj_eqf,) = ax_traj.plot([], [], [], color="steelblue", linewidth=1.5, label="EqF Estimate")
     (traj_fc,) = ax_traj.plot([], [], [], color="darkorange", linewidth=1.5, label="FC Estimate")
@@ -309,7 +328,7 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
     telem_fc = ax_fc.text2D(0.02, 0.97, "", transform=ax_fc.transAxes,
                             fontsize=7, verticalalignment="top", family="monospace")
 
-    # Auto-scale trajectory axes based on all trajectory bounds
+    # Auto-scale trajectory axes based on all trajectory bounds (ENU)
     all_n = list(pn_eqf) + list(pn_fc) + list(gps_n[~np.isnan(gps_n)])
     all_e = list(pe_eqf) + list(pe_fc) + list(gps_e[~np.isnan(gps_e)])
     all_u = list(pu_eqf) + list(pu_fc) + list(gps_u[~np.isnan(gps_u)])
@@ -343,12 +362,14 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
 
         yaw, pitch, roll = row["yaw(rad)"], row["pitch(rad)"], row["roll(rad)"]
         _update_wire(lines_eqf, segs, attitude_matrix(yaw, pitch, roll))
+        # ENU altitude: negate down to get up
+        altitude_up = -row['pd(m)']
         telem_eqf.set_text(
             f"t     = {t:.2f} s\n"
             f"pitch = {math.degrees(pitch):+.1f}°\n"
             f"yaw   = {math.degrees(yaw):+.1f}°\n"
             f"roll  = {math.degrees(roll):+.1f}°\n"
-            f"alt   = {-row['pd(m)']:+.1f} m"
+            f"alt   = {altitude_up:+.1f} m"
         )
 
         fc_idx = int(np.searchsorted(fc_t, t, side="left"))
@@ -361,7 +382,7 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
             f"roll  = {math.degrees(fc_r):+.1f}°"
         )
 
-        # Update trajectory plot
+        # Update trajectory plot (ENU coordinates)
         row_idx = render_indices[frame_idx]
         traj_eqf.set_data(pe_eqf[:row_idx + 1], pn_eqf[:row_idx + 1])
         traj_eqf.set_3d_properties(pu_eqf[:row_idx + 1])
@@ -381,16 +402,50 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
 
 
 if __name__ == "__main__":
-    csv_path = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path("outputs/tg_eqf_output.csv")
-    )
+    # Determine which CSV to use
+    if len(sys.argv) > 1:
+        csv_path = Path(sys.argv[1])
+        data_type = "custom"
+    else:
+        # Default to combined static+flight data
+        csv_path = DEFAULT_EQF_CSV
+        if csv_path.exists():
+            data_type = "COMBINED (30s static + flight)"
+        else:
+            csv_path = Path("outputs/tg_eqf_output.csv")
+            data_type = "FLIGHT ONLY"
 
     if not csv_path.exists():
-        print(f"{csv_path} not found — run python eqf_filter.py first")
+        print(f"ERROR: {csv_path} not found")
+        print()
+        print("Options:")
+        print("  python eqf_renderer.py")
+        print(f"    Loads: {DEFAULT_EQF_CSV}")
+        print()
+        print("  python eqf_renderer.py outputs/tg_eqf_output.csv")
+        print("    Loads: Flight-only data")
+        print()
+        print("Required files:")
+        print("  - EqF output CSV (run: python eqf_filter.py)")
+        print("  - FC data (data/20241011_NIMBUS24_Flight_FC_Data.csv)")
         sys.exit(1)
+
+    print("=" * 70)
+    print("ROCKET ATTITUDE & TRAJECTORY RENDERER (ENU FRAME)")
+    print("=" * 70)
+    print(f"EqF Data: {data_type}")
+    print(f"File:     {csv_path}")
+    print()
 
     rows = load_eqf_csv(csv_path)
     print(f"Loaded {len(rows)} EqF rows")
+    print()
+    print("Comparison:")
+    print("  Left-top:    TG-EqF Filter Estimate (blue rocket)")
+    print("  Left-bottom: Flight Computer Estimate (orange rocket)")
+    print("  Right:       3D Trajectory (EqF blue, FC orange, GPS green)")
+    print()
+    print("=" * 70)
+    print()
+
     animate(rows, realtime=True)
