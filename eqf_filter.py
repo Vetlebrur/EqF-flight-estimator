@@ -19,7 +19,10 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 # Configuration
 # =============================================================================
 
-USE_STATIC_DATA = "flight30s"  # False = real flight; True/string = static/gravity/combined/flight30s data
+# "full"    -> data/20241011_NIMBUS24_Flight_FC_Data.csv          (complete flight)
+# "30s"     -> data/20241011_NIMBUS24_Flight_FC_Data_30s.csv      (first 30 s)
+# "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
+DATASET = "30s"
 
 GNSS_UPDATE_FREQ_HZ = 1.0   # GNSS update frequency (Hz) — update every 1/f seconds
 GNSS_POS_ONLY = False
@@ -674,20 +677,14 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
     """Run filter on NIMBUS24 FC CSV data."""
     # Select data source based on configuration
     if csv_in is None:
-        if USE_STATIC_DATA == "combined":
-            csv_in = "data/20241011_NIMBUS24_combined_static_flight.csv"
-            csv_out = "outputs/tg_eqf_output_combined.csv"
-        elif USE_STATIC_DATA == "gravity":
-            csv_in = "data/20241011_NIMBUS24_gravity_only_30s.csv"
-            csv_out = "outputs/tg_eqf_output_gravity.csv"
-        elif USE_STATIC_DATA == "flight30s":
-            csv_in = "data/20241011_NIMBUS24_flight_first_30s.csv"
-            csv_out = "outputs/tg_eqf_output_flight30s.csv"
-        elif USE_STATIC_DATA:
-            csv_in = "data/20241011_NIMBUS24_truly_static_30s.csv"
-            csv_out = "outputs/tg_eqf_output_static.csv"
-        else:
-            csv_in = "data/20241011_NIMBUS24_Flight_FC_Data.csv"
+        _datasets = {
+            "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",         "outputs/tg_eqf_output_full.csv"),
+            "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",      "outputs/tg_eqf_output_30s.csv"),
+            "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv",  "outputs/tg_eqf_output_1s_loop.csv"),
+        }
+        if DATASET not in _datasets:
+            raise ValueError(f"Unknown DATASET {DATASET!r}. Choose from: {list(_datasets)}")
+        csv_in, csv_out = _datasets[DATASET]
 
     raw = np.genfromtxt(csv_in, delimiter=",", skip_header=1)
 

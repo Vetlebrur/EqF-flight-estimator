@@ -16,7 +16,10 @@ def safe_normalize(vec, epsilon=1e-8):
 # =============================================================================
 # Configuration
 # =============================================================================
-USE_STATIC_DATA = "flight30s"  # False = real flight; True/string = static/gravity/combined/flight30s data
+# "full"    -> data/20241011_NIMBUS24_Flight_FC_Data.csv          (complete flight)
+# "30s"     -> data/20241011_NIMBUS24_Flight_FC_Data_30s.csv      (first 30 s)
+# "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
+DATASET = "30s"
 
 # =============================================================================
 # Constants
@@ -55,36 +58,20 @@ def gps_to_ned(lat, lon, alt, lat0, lon0, alt0):
     return np.array([north, east, down])
 
 # Load CSV data based on configuration
-if USE_STATIC_DATA == "combined":
-    print("Loading COMBINED (STATIC + FLIGHT) data for plotting")
-    input_csv = "data/20241011_NIMBUS24_combined_static_flight.csv"
-    output_csv = "outputs/tg_eqf_output_combined.csv"
-    data_type = "COMBINED (STATIC + FLIGHT)"
-elif USE_STATIC_DATA == "gravity":
-    print("Loading GRAVITY-ONLY test data for plotting")
-    input_csv = "data/20241011_NIMBUS24_gravity_only_30s.csv"
-    output_csv = "outputs/tg_eqf_output_gravity.csv"
-    data_type = "GRAVITY-ONLY TEST"
-elif USE_STATIC_DATA == "flight30s":
-    print("Loading FLIGHT (first 30s) data for plotting")
-    input_csv = "data/20241011_NIMBUS24_flight_first_30s.csv"
-    output_csv = "outputs/tg_eqf_output_flight30s.csv"
-    data_type = "FLIGHT (first 30s)"
-elif USE_STATIC_DATA is True:
-    print("Loading STATIC data for plotting")
-    input_csv = "data/20241011_NIMBUS24_truly_static_30s.csv"
-    output_csv = "outputs/tg_eqf_output_static.csv"
-    data_type = "STATIC DATA"
-else:
-    print("Loading FLIGHT data for plotting")
-    input_csv = "data/20241011_NIMBUS24_Flight_FC_Data.csv"
-    output_csv = "outputs/tg_eqf_output.csv"
-    data_type = "FLIGHT DATA"
+_datasets = {
+    "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",        "outputs/tg_eqf_output_full.csv",     "FULL FLIGHT"),
+    "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",     "outputs/tg_eqf_output_30s.csv",      "FLIGHT (first 30s)"),
+    "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv", "outputs/tg_eqf_output_1s_loop.csv",  "FLIGHT (1s loop)"),
+}
+if DATASET not in _datasets:
+    raise ValueError(f"Unknown DATASET {DATASET!r}. Choose from: {list(_datasets)}")
+input_csv, output_csv, data_type = _datasets[DATASET]
+print(f"Loading {data_type} data for plotting")
 
 # Verify output file exists
 if not Path(output_csv).exists():
     print(f"Error: Output file not found: {output_csv}")
-    print(f"Make sure to run eqf_filter.py with USE_STATIC_DATA={USE_STATIC_DATA}")
+    print(f"Make sure to run eqf_filter.py with DATASET={DATASET!r}")
     exit(1)
 
 raw = np.genfromtxt(input_csv, delimiter=",", skip_header=1)
@@ -396,14 +383,7 @@ fig.suptitle(f'EqF Trajectory Estimation - {data_type}', fontsize=14, fontweight
 plt.tight_layout(rect=[0, 0, 1, 0.99])  # Adjust for suptitle
 
 # Save with data type in filename
-if USE_STATIC_DATA == "combined":
-    output_suffix = "_combined"
-elif USE_STATIC_DATA == "gravity":
-    output_suffix = "_gravity"
-elif USE_STATIC_DATA is True:
-    output_suffix = "_static"
-else:
-    output_suffix = ""
+output_suffix = f"_{DATASET}"
 output_filename = f'outputs/trajectory_plot{output_suffix}.png'
 plt.savefig(output_filename, dpi=150)
 print(f"Saved {data_type.lower()} trajectory plot to {output_filename}")
