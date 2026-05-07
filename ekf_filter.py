@@ -1,10 +1,9 @@
 """Extended Kalman Filter for rocket trajectory and attitude estimation using IMU and GNSS."""
 
 import os
+from typing import Any
 import numpy as np
 from scipy.linalg import expm
-import csv
-
 
 # =============================================================================
 # Constants
@@ -29,7 +28,7 @@ R_gnss_vel = np.eye(3) * (0.1**2)    # GNSS velocity error ~0.1 m/s
 # Euler Angle and Rotation Utilities
 # =============================================================================
 
-def euler_to_dcm(roll, pitch, yaw):
+def euler_to_dcm(roll: float, pitch: float, yaw: float) -> np.ndarray:
     """Convert Euler angles (rad) to Direction Cosine Matrix (DCM).
 
     Uses ZYX convention: R = Rz(yaw) * Ry(pitch) * Rx(roll)
@@ -49,7 +48,7 @@ def euler_to_dcm(roll, pitch, yaw):
     return R
 
 
-def dcm_to_euler(R):
+def dcm_to_euler(R: np.ndarray) -> tuple[float, float, float]:
     """Convert DCM to Euler angles (roll, pitch, yaw) in radians."""
     pitch = np.arcsin(-R[2, 0])
 
@@ -64,7 +63,7 @@ def dcm_to_euler(R):
     return roll, pitch, yaw
 
 
-def skew(v):
+def skew(v: np.ndarray) -> np.ndarray:
     """Create skew-symmetric matrix from 3-vector."""
     return np.array([
         [0, -v[2], v[1]],
@@ -73,7 +72,7 @@ def skew(v):
     ])
 
 
-def normalize_dcm(R):
+def normalize_dcm(R: np.ndarray) -> np.ndarray:
     """Orthonormalize DCM using SVD."""
     U, _, VT = np.linalg.svd(R)
     return U @ VT
@@ -100,7 +99,7 @@ class EKF:
         self.x = np.zeros(self.STATE_SIZE)
 
         # Initial covariance (large uncertainty)
-        self.P = np.diag([
+        self.cov: np.ndarray = np.diag([
             100.0**2,  # pos
             100.0**2,
             100.0**2,
@@ -121,7 +120,7 @@ class EKF:
         self.t_prev = None
         self.last_gnss_update = -999.0
 
-    def predict(self, t, accel_meas, gyro_meas):
+    def predict(self, t: float, accel_meas: np.ndarray, gyro_meas: np.ndarray) -> None:
         """Predict step using IMU measurements.
 
         Args:
@@ -165,7 +164,6 @@ class EKF:
         # w_norm = ||w||, R_new = R * exp(skew(w) * dt)
         w_mag = np.linalg.norm(gyro_unbiased)
         if w_mag > 1e-8:
-            w_hat = gyro_unbiased / w_mag
             dR = expm(skew(gyro_unbiased) * dt)
             R_new = R @ dR
             R_new = normalize_dcm(R_new)
@@ -200,12 +198,12 @@ class EKF:
         ]))
 
         # Covariance prediction: P = F @ P @ F.T + Q
-        self.P = F @ self.P @ F.T + Q
-        self.P = 0.5 * (self.P + self.P.T)  # Ensure symmetry
+        self.cov = F @ self.cov @ F.T + Q
+        self.cov = 0.5 * (self.cov + self.cov.T)  # Ensure symmetry
 
         self.t_prev = t
 
-    def _jacobian_F(self, vel, accel, gyro, R, dt):
+    def _jacobian_F(self, vel: np.ndarray, accel: np.ndarray, gyro: np.ndarray, R: np.ndarray, dt: float) -> np.ndarray:
         """Compute Jacobian of state transition."""
         F = np.eye(self.STATE_SIZE)
 
@@ -257,7 +255,7 @@ class EKF:
 
         return F
 
-    def update_gnss(self, pos_meas, vel_meas):
+    def update_gnss(self, pos_meas: np.ndarray, vel_meas: np.ndarray) -> None:
         """GNSS measurement update.
 
         Args:
@@ -280,23 +278,23 @@ class EKF:
         y = z - z_pred
 
         # Measurement covariance
-        R = np.diag(np.concatenate([np.diag(R_gnss_pos), np.diag(R_gnss_vel)]))
+        R_meas = np.diag(np.concatenate([np.diag(R_gnss_pos), np.diag(R_gnss_vel)]))
 
         # Kalman gain
-        S = H @ self.P @ H.T + R
-        K = self.P @ H.T @ np.linalg.inv(S)
+        S = H @ self.cov @ H.T + R_meas
+        K = self.cov @ H.T @ np.linalg.inv(S)
 
         # Update state
         self.x = self.x + K @ y
 
         # Update covariance
-        self.P = (np.eye(self.STATE_SIZE) - K @ H) @ self.P
-        self.P = 0.5 * (self.P + self.P.T)  # Ensure symmetry
+        self.cov = (np.eye(self.STATE_SIZE) - K @ H) @ self.cov
+        self.cov = 0.5 * (self.cov + self.cov.T)  # Ensure symmetry
 
-    def output_row(self, t):
+    def output_row(self, t: float) -> list[Any]:
         """Extract state as output row."""
         roll, pitch, yaw = self.x[self.ROLL:self.YAW+1]
-        R = euler_to_dcm(roll, pitch, yaw)
+        rot = euler_to_dcm(roll, pitch, yaw)
 
         return [
             t,
@@ -306,9 +304,9 @@ class EKF:
             self.x[self.VX],
             self.x[self.VY],
             self.x[self.VZ],
-            R[0, 0], R[0, 1], R[0, 2],
-            R[1, 0], R[1, 1], R[1, 2],
-            R[2, 0], R[2, 1], R[2, 2],
+            rot[0, 0], rot[0, 1], rot[0, 2],
+            rot[1, 0], rot[1, 1], rot[1, 2],
+            rot[2, 0], rot[2, 1], rot[2, 2],
             np.degrees(roll),
             np.degrees(pitch),
             np.degrees(yaw),
@@ -325,7 +323,7 @@ class EKF:
 # GPS Coordinate Conversion
 # =============================================================================
 
-def gps_to_ned(lat, lon, alt, lat0, lon0, alt0):
+def gps_to_ned(lat: float, lon: float, alt: float, lat0: float, lon0: float, alt0: float) -> np.ndarray:
     """Convert GPS (lat/lon/alt) to NED relative to reference."""
     dlat = np.radians(lat - lat0)
     dlon = np.radians(lon - lon0)
@@ -358,8 +356,8 @@ _C = {
 }
 
 
-def run(csv_in="data/20241011_NIMBUS24_Flight_FC_Data.csv",
-        csv_out="outputs/ekf_output.csv"):
+def run(csv_in: str = "data/20241011_NIMBUS24_Flight_FC_Data.csv",
+        csv_out: str = "outputs/ekf_output.csv") -> None:
     """Run EKF on NIMBUS24 FC CSV data."""
     raw = np.genfromtxt(csv_in, delimiter=",", skip_header=1)
 

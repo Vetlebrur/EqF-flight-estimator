@@ -3,17 +3,18 @@
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from scipy.linalg import expm
-from pylie import SO3, SE23, R3
+from pylie import SO3, SE23
 
 ref_path = Path(__file__).parent / "eqf-reference"
 sys.path.insert(0, str(ref_path))
 utils_path = ref_path / "Utils"
 sys.path.insert(0, str(utils_path))
 from matrix_math import *
-from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, grp_adj, local_coords, local_coords_inv, stateActionDiff
+from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, stateActionDiff
 
 # =============================================================================
 # Configuration
@@ -25,7 +26,6 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 DATASET = "30s"
 
 GNSS_UPDATE_FREQ_HZ = 1.0   # GNSS update frequency (Hz) — update every 1/f seconds
-GNSS_POS_ONLY = False
 # =============================================================================
 # Constants and Physical Parameters
 # =============================================================================
@@ -77,8 +77,8 @@ wmm_h = WMM_MAGNITUDE * np.cos(inc_rad)  # Horizontal component
 wmm_north = wmm_h * np.cos(dec_rad)
 wmm_east = wmm_h * np.sin(dec_rad)
 wmm_down = WMM_MAGNITUDE * np.sin(inc_rad)
-MAG_FIELD_NED = np.array([wmm_north, wmm_east, wmm_down])
-MAG_FIELD_NED = MAG_FIELD_NED / np.linalg.norm(MAG_FIELD_NED)  # Normalize
+_mag_raw = np.array([wmm_north, wmm_east, wmm_down])
+MAG_FIELD_NED = _mag_raw / np.linalg.norm(_mag_raw)
 
 # Hard-iron bias correction (body frame offset)
 # Computed from static phase analysis: mag_body_mean from diagnose_magnetometer.py
@@ -95,15 +95,15 @@ MAG_ACCEL_GATE_THRESHOLD = 15.0  # Disable during boost (accel > 15 m/s²)
 # =============================================================================
 
 
-def col(x):
+def col(x: Any) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     return x.reshape(-1, 1)
 
 
-def sym(A):
+def sym(A: np.ndarray) -> np.ndarray:
     return 0.5 * (A + A.T)
 
-def blockdiag(*arrs):
+def blockdiag(*arrs: np.ndarray) -> np.ndarray:
     """Create block diagonal matrix from array list."""
     n = sum(a.shape[0] for a in arrs)
     m = sum(a.shape[1] for a in arrs)
@@ -186,7 +186,7 @@ class TGEqF:
         ])
         return R
 
-    def initialize_attitude_from_gravity(self, accel: np.ndarray, gyro: np.ndarray):
+    def initialize_attitude_from_gravity(self, accel: np.ndarray, gyro: np.ndarray) -> None:
         """Initialize attitude from FC's initial estimate (roll, pitch, yaw from flight computer).
 
         Uses the flight computer's initial Euler angles to set up the filter's rotation matrix.
@@ -203,7 +203,7 @@ class TGEqF:
         R_init = self.euler_to_rotation_matrix(roll_fc, pitch_fc, yaw_fc)
 
         # Create SE(2,3) with FC's initial rotation
-        se23_init = SE23(R_init)
+        se23_init = SE23(R_init)  # type: ignore[arg-type]
         self.X_hat = SymGroup(se23_init, np.zeros((5, 5)))
 
         self.attitude_initialized = True
@@ -227,7 +227,8 @@ class TGEqF:
         # Magnetometer values
         self.mag_meas_0 = MAG_FIELD_NED.reshape(-1, 1)  # WMM field in NED
         self.magnetometer_initialized = True  # Pre-initialized with WMM
-        self.accel_norm_prev = 0.0  # For magnetometer gating
+        self.accel_norm_prev = 0.0
+        self.mag_ref_initialized: bool = False
 
         self.prev_altitude = 0.0
         self.mag_update_count = 0  # Track magnetometer update calls
@@ -239,9 +240,9 @@ class TGEqF:
         self.prev_yaw = 0.0
 
         # Filter diagnostics: ANIS and ANEES
-        self.anis_values = []  # Average Normalized Innovation Squared
-        self.anees_values = []  # Average Normalized Estimation Error Squared
-        self.update_times = []  # Times of updates for diagnostics
+        self.anis_values: list[float] = []
+        self.anees_values: list[float] = []
+        self.update_times: list[tuple[str, float, float]] = []
 
         # =====================================================================
         # Assemble noise covariance matrices from parameters
@@ -276,7 +277,7 @@ class TGEqF:
         xi.b[6:9] = 0
         return xi
 
-    def _apply_moving_average(self, measurement, buffer):
+    def _apply_moving_average(self, measurement: np.ndarray, buffer: list[np.ndarray]) -> np.ndarray:
         """Apply moving average filter with window size of 10."""
         buffer.append(measurement.flatten())
         if len(buffer) > self.ma_window:
@@ -284,7 +285,7 @@ class TGEqF:
         return np.mean(buffer, axis=0).reshape(-1, 1)
 
     @staticmethod
-    def _unwrap_angle(angle_raw, angle_prev):
+    def _unwrap_angle(angle_raw: float, angle_prev: float) -> float:
         """Unwrap angle to avoid discontinuous jumps at ±π.
 
         Maps angle_raw to be within π of angle_prev, creating continuous output.
@@ -301,7 +302,7 @@ class TGEqF:
     # Propagation
     # =========================================================================
 
-    def propagate(self, t, gyro, accel):
+    def propagate(self, t: float, gyro: np.ndarray, accel: np.ndarray) -> None:
         """Propagate state using gyro and accel measurements."""
         gyro = col(gyro)
         accel = col(accel)
@@ -333,7 +334,7 @@ class TGEqF:
 
         lift = calculate_lift(self.xi_hat(), U)
 
-        self.X_hat = self.X_hat * SymGroup.exp(lift * dt)
+        self.X_hat = self.X_hat * SymGroup.exp(lift * dt)  # type: ignore[attr-defined]
 
         A = self.calculate_A(U)
         Phi = expm(A * dt)
@@ -358,7 +359,7 @@ class TGEqF:
     # Update functions
     # =========================================================================
 
-    def magnetometer_update(self, mag: np.ndarray, t=None):
+    def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
         """Update state using magnetometer measurement (hard-iron corrected).
 
         Args:
@@ -401,7 +402,7 @@ class TGEqF:
         if t is not None and anis is not None:
             self.update_times.append(('mag', t, anis))
 
-        self.X_hat = SymGroup.exp(Delta) * self.X_hat
+        self.X_hat = SymGroup.exp(Delta) * self.X_hat  # type: ignore[attr-defined]
         # Joseph form
         I = np.eye(18)
         self.Sigma = (I - K @ C) @ self.Sigma @ (I - K @ C).T + K @ self.R_mag @ K.T
@@ -411,7 +412,7 @@ class TGEqF:
         self.mag_update_count += 1
 
 
-    def GNSS_update(self, pos_NED:np.ndarray ,vel_NED:np.ndarray, t=None):
+    def GNSS_update(self, pos_NED: np.ndarray, vel_NED: np.ndarray, t: float | None = None) -> None:
         """Correct position and velocity estimates using GNSS measurements."""
         # Get current estimates from composed state
         xi_hat = self.xi_hat()
@@ -433,7 +434,7 @@ class TGEqF:
         if t is not None and anis is not None:
             self.update_times.append(('gnss', t, anis))
 
-        self.X_hat = SymGroup.exp(Delta) * self.X_hat
+        self.X_hat = SymGroup.exp(Delta) * self.X_hat  # type: ignore[attr-defined]
         #Joseph form
         I = np.eye(18)
         self.Sigma = (I - K @ C) @ self.Sigma @ (I - K @ C).T + K @ self.R_gnss @ K.T
@@ -455,61 +456,39 @@ class TGEqF:
         if t is not None:
             self.t_last_gnss = t
 
-    def GNSS_update_pos_only(self, pos_NED:np.ndarray, t=None):
-        """Correct position and velocity estimates using GNSS measurements."""
-        # Get current estimates from composed state
-        xi_hat = self.xi_hat()
-        pos_est = xi_hat.T.w().as_vector().flatten()
-
-        #position innovation
-        delta = np.hstack([pos_NED - pos_est])
-        delta_u = delta.reshape(-1, 1)
-
-        C = self.calculate_C_gnss_pos_only(pos_NED)
-        S = C @ self.Sigma @ C.T + self.R_gnss_pos_only
-        Sinv = np.linalg.inv(S)
-        K = self.Sigma @ C.T @ Sinv
-        Delta = self.innovationLift @ K @ delta_u
-
-        self.X_hat = SymGroup.exp(Delta) * self.X_hat
-        #Joseph form
-        I = np.eye(18)
-        self.Sigma = (I - K @ C) @ self.Sigma @ (I - K @ C).T + K @ self.R_gnss_pos_only @ K.T
-        self.Sigma = sym(self.Sigma)
-
-        # Track when last GNSS update occurred
-        if t is not None:
-            self.t_last_gnss = t
-
     # =========================================================================
     # Filter Diagnostics
     # =========================================================================
 
-    def compute_anis(self, innovation, S):
+    def compute_anis(self, innovation: Any, S: Any) -> float | None:
         """Compute Average Normalized Innovation Squared.
 
         ANIS = innovation^T * S^{-1} * innovation
         Should be close to measurement dimension (~3 for 3D measurements)
         """
         try:
-            S_inv = np.linalg.inv(S)
-            anis_mat = innovation.T @ S_inv @ innovation
-            anis = float(np.squeeze(anis_mat))  # Extract scalar from matrix
+            inn: np.ndarray = np.asarray(innovation, dtype=float)
+            s: np.ndarray = np.asarray(S, dtype=float)
+            S_inv: np.ndarray = np.linalg.inv(s)
+            anis_mat: np.ndarray = inn.T @ S_inv @ inn
+            anis = float(np.squeeze(anis_mat))
             self.anis_values.append(anis)
             return anis
         except (np.linalg.LinAlgError, ValueError):
             return None
 
-    def compute_anees(self, state_error, P):
+    def compute_anees(self, state_error: Any, P: Any) -> float | None:
         """Compute Average Normalized Estimation Error Squared.
 
         ANEES = error^T * P^{-1} * error
         Should be close to state dimension (~18 for full state)
         """
         try:
-            P_inv = np.linalg.inv(P)
-            anees_mat = state_error.T @ P_inv @ state_error
-            anees = float(np.squeeze(anees_mat))  # Extract scalar from matrix
+            err: np.ndarray = np.asarray(state_error, dtype=float)
+            p: np.ndarray = np.asarray(P, dtype=float)
+            P_inv: np.ndarray = np.linalg.inv(p)
+            anees_mat: np.ndarray = err.T @ P_inv @ err
+            anees = float(np.squeeze(anees_mat))
             self.anees_values.append(anees)
             return anees
         except (np.linalg.LinAlgError, ValueError):
@@ -517,7 +496,7 @@ class TGEqF:
 
     # =========================================================================
 
-    def output_row(self, t):
+    def output_row(self, t: float) -> list[float]:
         """Extract state as output row [t, p, v, R, euler, b_gyro, b_accel]."""
         xi_hat = self.xi_hat()
         R = xi_hat.T.R().as_matrix()
@@ -575,7 +554,7 @@ class TGEqF:
     # Propagation Jacobians
     # =============================================================================
 
-    def calculate_A(self, u : InputSpace) -> np.ndarray:
+    def calculate_A(self, u: InputSpace) -> np.ndarray:
         u_0 = velocityAction(self.X_hat.inv(), u)
         At = np.zeros((18, 18))
         At[0:9, 0:9] = np.block([
@@ -622,18 +601,6 @@ class TGEqF:
 
         return Ct
     
-    def calculate_C_gnss_pos_only(self, meas) -> np.ndarray:
-        # 3x18 C matrix for position-only measurements
-        Ct = np.zeros((3, 18))
-
-        # Get composed state for measurement Jacobian
-        xi_hat = self.xi_hat()
-
-        # Position measurement: C_p = [-wedge(p), 0, I3, 0, 0, 0]
-        Ct[0:3, 0:3] = -0.5 * (SO3.wedge(xi_hat.T.w().as_vector()) + meas)
-        Ct[0:3, 6:9] = np.eye(3)
-
-        return Ct
 
 # =============================================================================
 # CSV I/O
@@ -661,7 +628,7 @@ _C = {
 R_EARTH = 6_378_137.0
 
 
-def _gps_to_ned(lat, lon, alt, lat0, lon0, alt0):
+def _gps_to_ned(lat: float, lon: float, alt: float, lat0: float, lon0: float, alt0: float) -> np.ndarray:
     """Convert GPS (lat/lon/alt) to NED relative to reference."""
     dlat = np.radians(lat - lat0)
     dlon = np.radians(lon - lon0)
@@ -673,7 +640,7 @@ def _gps_to_ned(lat, lon, alt, lat0, lon0, alt0):
     return np.array([north, east, down])
 
 
-def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
+def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv") -> None:
     """Run filter on NIMBUS24 FC CSV data."""
     # Select data source based on configuration
     if csv_in is None:
@@ -703,8 +670,6 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
     filt = TGEqF()
     out = []
     prev_mag = None
-    prev_lat, prev_lon = None, None
-    R_pos = np.eye(3) * 5.0**2
     gnss_count = 0
     last_progress_t = 0
 
@@ -737,13 +702,13 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
             mag = mag / mag_norm
         # Initialize magnetometer reference with first measurement after attitude initialization
         # This captures the actual sensor field (body frame) at the initial attitude
-        if filt.attitude_initialized and not hasattr(filt, '_mag_ref_initialized'):
+        if filt.attitude_initialized and not hasattr(filt, 'mag_ref_initialized'):
             # Project first measurement into NED frame using the initialized attitude
             xi_hat = filt.xi_hat()
             R_body_to_ned = xi_hat.T.R().as_matrix()  # Body frame to NED
             filt.mag_meas_0 = (R_body_to_ned @ 
             mag).reshape(-1, 1)
-            filt._mag_ref_initialized = True
+            filt.mag_ref_initialized = True
 
         # Magnetometer update (with hard-iron bias correction applied above)
         if prev_mag is None or not np.allclose(prev_mag, mag):
@@ -763,13 +728,9 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
                 alt = row[_C["alt"]] / 1000.0
                 pos_NED = _gps_to_ned(lat, lon, alt, lat0, lon0, alt0)
                 vel_NED = np.array([row[_C["gps_vn"]], row[_C["gps_ve"]], row[_C["gps_vd"]]]) / 1000.0
-                if GNSS_POS_ONLY:
-                    filt.GNSS_update_pos_only(pos_NED,t)
-                else:
-                    filt.GNSS_update(pos_NED, vel_NED, t)
+                filt.GNSS_update(pos_NED, vel_NED, t)
                 gnss_count += 1
 
-            prev_lat, prev_lon = lat, lon
 
         out.append(filt.output_row(t))
 
@@ -802,18 +763,18 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
         diag_out = csv_out.replace("tg_eqf_output", "tg_eqf_diagnostics")
         with open(diag_out, 'w') as f:
             f.write("time,update_type,anis,anees\n")
-            anis_dict = {}
-            anees_dict = {}
+            anis_dict: dict[tuple[str, float], float] = {}
+            anees_dict: dict[tuple[str, float], float] = {}
             # Organize by (update_type, time) to combine anis and anees
-            for update_type, t, value in filt.update_times:
-                key = (update_type.split('_')[0], t)  # Use 'mag' or 'gnss' as key
+            for update_type, ts, value in filt.update_times:
+                key = (update_type.split('_')[0], ts)
                 if 'anees' in update_type:
                     anees_dict[key] = value
                 else:
                     anis_dict[key] = value
 
             # Merge and write
-            all_times = {}
+            all_times: dict[tuple[str, float], dict[str, float | None]] = {}
             for key, val in anis_dict.items():
                 if key not in all_times:
                     all_times[key] = {'anis': None, 'anees': None}
@@ -823,10 +784,10 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
                     all_times[key] = {'anis': None, 'anees': None}
                 all_times[key]['anees'] = val
 
-            for (update_type, t), values in sorted(all_times.items()):
+            for (update_type, ts), values in sorted(all_times.items()):
                 anis_str = f"{values['anis']:.4f}" if values['anis'] is not None else ""
                 anees_str = f"{values['anees']:.4f}" if values['anees'] is not None else ""
-                f.write(f"{t:.4f},{update_type},{anis_str},{anees_str}\n")
+                f.write(f"{ts:.4f},{update_type},{anis_str},{anees_str}\n")
         print(f"Wrote diagnostic data to {diag_out}")
 
     # Print filter diagnostics

@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 
-def safe_normalize(vec, epsilon=1e-8):
+def safe_normalize(vec: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
     """Normalize vector with guard against zero-norm."""
     norm = np.linalg.norm(vec)
     if norm < epsilon:
@@ -47,7 +47,7 @@ _C = {
     "yaw": 31,     # FC yaw (rad)
 }
 
-def gps_to_ned(lat, lon, alt, lat0, lon0, alt0):
+def gps_to_ned(lat: float, lon: float, alt: float, lat0: float, lon0: float, alt0: float) -> np.ndarray:
     """Convert GPS (lat/lon/alt) to NED relative to reference."""
     dlat = np.radians(lat - lat0)
     dlon = np.radians(lon - lon0)
@@ -198,9 +198,9 @@ for i in range(len(out)):
 
 # Validate rotation matrices (det=1, R^T R = I)
 invalid_count = 0
-for i, R in enumerate(R_list):
-    det = np.linalg.det(R)
-    ortho_error = np.linalg.norm(R.T @ R - np.eye(3))
+for i, rot in enumerate(R_list):
+    det = np.linalg.det(rot)
+    ortho_error = np.linalg.norm(rot.T @ rot - np.eye(3))
     if abs(det - 1.0) > 0.01 or ortho_error > 0.01:
         invalid_count += 1
 
@@ -380,7 +380,7 @@ ax8.grid(True)
 # (data_type already defined in file loading section)
 fig.suptitle(f'EqF Trajectory Estimation - {data_type}', fontsize=14, fontweight='bold')
 
-plt.tight_layout(rect=[0, 0, 1, 0.99])  # Adjust for suptitle
+plt.tight_layout(rect=(0, 0, 1, 0.99))  # Adjust for suptitle
 
 # Save with data type in filename
 output_suffix = f"_{DATASET}"
@@ -449,9 +449,9 @@ if diag_data is not None:
         anis_mean = np.mean(anis_vals)
         anis_std = np.std(anis_vals)
         anis_p95 = np.percentile(anis_vals, 95)
-        ax_anis.axhline(y=anis_mean, color='blue', linestyle='--', linewidth=1.5, alpha=0.7,
+        ax_anis.axhline(y=float(anis_mean), color='blue', linestyle='--', linewidth=1.5, alpha=0.7,
                        label=f'Mean: {anis_mean:.3f}')
-        ax_anis.axhline(y=anis_p95, color='darkblue', linestyle=':', linewidth=1.5, alpha=0.7,
+        ax_anis.axhline(y=float(anis_p95), color='darkblue', linestyle=':', linewidth=1.5, alpha=0.7,
                        label=f'95th %ile: {anis_p95:.3f}')
         ax_anis.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
         ax_anis.fill_between(anis_times, anis_mean - anis_std, anis_mean + anis_std,
@@ -469,9 +469,9 @@ if diag_data is not None:
         anees_mean = np.mean(anees_vals)
         anees_std = np.std(anees_vals)
         anees_p95 = np.percentile(anees_vals, 95)
-        ax_anees.axhline(y=anees_mean, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
+        ax_anees.axhline(y=float(anees_mean), color='red', linestyle='--', linewidth=1.5, alpha=0.7,
                         label=f'Mean: {anees_mean:.1f}')
-        ax_anees.axhline(y=anees_p95, color='darkred', linestyle=':', linewidth=1.5, alpha=0.7,
+        ax_anees.axhline(y=float(anees_p95), color='darkred', linestyle=':', linewidth=1.5, alpha=0.7,
                         label=f'95th %ile: {anees_p95:.1f}')
         ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
         ax_anees.fill_between(anees_times, np.maximum(0, anees_mean - anees_std), anees_mean + anees_std,
@@ -513,7 +513,7 @@ if diag_data is not None:
                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     fig_diag.suptitle(f'Filter Diagnostics - {data_type}', fontsize=14, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.tight_layout(rect=(0, 0, 1, 0.97))
 
     # Save diagnostic figure
     diag_filename = f'outputs/diagnostics_plot{output_suffix}.png'
