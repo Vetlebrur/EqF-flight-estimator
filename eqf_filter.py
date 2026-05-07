@@ -45,9 +45,9 @@ P_0_blocks = [
 
 # --- Process Noise (Q) ---
 # Conservative random walk for biases (prevent explosion)
-Q_rot_var = 1e-1               # [0:3] rotation process noise
-Q_vel_var = 1e+1                # [3:6] velocity process noise
-Q_pos_var = 1e+1                # [6:9] position process noise
+Q_rot_var = 1e-2               # [0:3] rotation process noise
+Q_vel_var = 1e-1                # [3:6] velocity process noise
+Q_pos_var = 1e-2                # [6:9] position process noise
 Q_gyro_bias_var = (1e-3)**2     # [9:12] gyro bias random walk (very tight)
 Q_accel_bias_var = (1e-2)**2    # [12:15] accel bias random walk (very tight)
 Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
@@ -198,15 +198,6 @@ class TGEqF:
 
         # Convert to rotation matrix using intrinsic Z-Y-X rotations
         R_init = self.euler_to_rotation_matrix(roll_fc, pitch_fc, yaw_fc)
-
-        # Test: Compare predicted gravity in body frame with actual accel
-        gravity_ned = np.array([0, 0, 9.81])
-        g_pred = R_init.T @ gravity_ned
-        accel_first = accel.flatten()
-
-        print(f"[ATTITUDE INIT] Predicted gravity in body frame: {g_pred}")
-        print(f"[ATTITUDE INIT] First accel sample:              {accel_first}")
-        print(f"[ATTITUDE INIT] Alignment error: {np.linalg.norm(g_pred - accel_first):.3f} m/s²")
 
         # Create SE(2,3) with FC's initial rotation
         se23_init = SE23(R_init)
