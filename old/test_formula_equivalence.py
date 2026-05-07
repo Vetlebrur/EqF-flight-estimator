@@ -7,10 +7,10 @@ we test the core formulas directly against what the reference documentation spec
 
 import numpy as np
 from pylie import SE23, SO3
-from tg_eqf import TGEqF
-from SE23xxse23 import SE23xxse23
-import eqf_predict
-import eqf_update
+from old.tg_eqf import TGEqF
+from old.SE23xxse23 import SE23xxse23
+import old.eqf_predict as eqf_predict
+import old.eqf_update as eqf_update
 
 def test_lift_formula():
     """

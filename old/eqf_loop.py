@@ -1,11 +1,11 @@
 import numpy as np
 import csv
 from pathlib import Path
-from tg_eqf import TGEqF
-from update_processor import UpdateProcessor
-import eqf_predict  # Attaches predict methods to TGEqF
-import eqf_update  # Attaches update methods to TGEqF
-import eqf_reset  # Attaches reset methods to TGEqF
+from old.tg_eqf import TGEqF
+from old.update_processor import UpdateProcessor
+import old.eqf_predict as eqf_predict  # Attaches predict methods to TGEqF
+import old.eqf_update as eqf_update  # Attaches update methods to TGEqF
+import old.eqf_reset as eqf_reset  # Attaches reset methods to TGEqF
 
 
 def main():

@@ -5,9 +5,9 @@ This example demonstrates the basic usage of TGEqF with predict and update steps
 """
 
 import numpy as np
-from tg_eqf import TGEqF
-import eqf_predict  # Attaches predict methods to TGEqF
-import eqf_update   # Attaches update methods to TGEqF
+from old.tg_eqf import TGEqF
+import old.eqf_predict as eqf_predict  # Attaches predict methods to TGEqF
+import old.eqf_update as eqf_update   # Attaches update methods to TGEqF
 
 
 def main():

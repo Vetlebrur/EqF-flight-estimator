@@ -9,7 +9,7 @@ Base class for the EqF implementation. Method implementations are in separate fi
 from pylie import SE23, SO3
 import numpy as np
 from typing import Tuple, Optional
-import eqf_config as config
+import old.eqf_config as config
 
 
 class TGEqF:

@@ -9,8 +9,8 @@ import numpy as np
 from typing import Optional, Tuple
 from pylie import SE23, SO3
 import scipy
-from tg_eqf import TGEqF
-from SE23xxse23 import SE23xxse23
+from old.tg_eqf import TGEqF
+from old.SE23xxse23 import SE23xxse23
 
 def calculate_A(
     self: TGEqF,

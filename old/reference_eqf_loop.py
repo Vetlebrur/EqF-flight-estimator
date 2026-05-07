@@ -13,7 +13,7 @@ import csv
 from pathlib import Path
 from Filters.Calibrated.SE23_se23_EqF import SE23_se23_EqF
 from Symmetries.Calibrated.SE23_se23.Symmetry import *
-from update_processor import UpdateProcessor
+from old.update_processor import UpdateProcessor
 
 
 def main():

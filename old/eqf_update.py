@@ -7,10 +7,10 @@ Implements update methods: magnetometer_update(), gnss_update(), barometer_updat
 import numpy as np
 from typing import Optional
 from scipy.linalg import expm
-from tg_eqf import TGEqF
+from old.tg_eqf import TGEqF
 from pylie import SO3, SE23
-from SE23xxse23 import SE23xxse23
-import eqf_config as config
+from old.SE23xxse23 import SE23xxse23
+import old.eqf_config as config
 
 # def calculate_gnss_C_old(
 #     self: TGEqF,

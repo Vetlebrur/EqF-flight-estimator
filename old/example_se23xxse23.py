@@ -6,7 +6,7 @@ for biased inertial navigation.
 """
 
 import numpy as np
-from SE23xxse23 import SE23xxse23
+from old.SE23xxse23 import SE23xxse23
 from pylie import SE23
 
 

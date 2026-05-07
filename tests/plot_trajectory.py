@@ -16,7 +16,7 @@ def safe_normalize(vec, epsilon=1e-8):
 # =============================================================================
 # Configuration
 # =============================================================================
-USE_STATIC_DATA = False  # False = real flight; True/string = static/gravity/combined data
+USE_STATIC_DATA = "flight30s"  # False = real flight; True/string = static/gravity/combined/flight30s data
 
 # =============================================================================
 # Constants
@@ -65,6 +65,11 @@ elif USE_STATIC_DATA == "gravity":
     input_csv = "data/20241011_NIMBUS24_gravity_only_30s.csv"
     output_csv = "outputs/tg_eqf_output_gravity.csv"
     data_type = "GRAVITY-ONLY TEST"
+elif USE_STATIC_DATA == "flight30s":
+    print("Loading FLIGHT (first 30s) data for plotting")
+    input_csv = "data/20241011_NIMBUS24_flight_first_30s.csv"
+    output_csv = "outputs/tg_eqf_output_flight30s.csv"
+    data_type = "FLIGHT (first 30s)"
 elif USE_STATIC_DATA is True:
     print("Loading STATIC data for plotting")
     input_csv = "data/20241011_NIMBUS24_truly_static_30s.csv"

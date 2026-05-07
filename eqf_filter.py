@@ -19,7 +19,7 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 # Configuration
 # =============================================================================
 
-USE_STATIC_DATA = False  # False = real flight; True/string = static/gravity/combined data
+USE_STATIC_DATA = "flight30s"  # False = real flight; True/string = static/gravity/combined/flight30s data
 
 GNSS_UPDATE_FREQ_HZ = 1.0   # GNSS update frequency (Hz) — update every 1/f seconds
 GNSS_POS_ONLY = False
@@ -120,7 +120,7 @@ def blockdiag(*arrs):
 # =============================================================================
 
 G = np.zeros((5, 5))
-G[2, 3] = -g
+G[2, 3] = g
 
 
 # =============================================================================
@@ -198,6 +198,15 @@ class TGEqF:
 
         # Convert to rotation matrix using intrinsic Z-Y-X rotations
         R_init = self.euler_to_rotation_matrix(roll_fc, pitch_fc, yaw_fc)
+
+        # Test: Compare predicted gravity in body frame with actual accel
+        gravity_ned = np.array([0, 0, 9.81])
+        g_pred = R_init.T @ gravity_ned
+        accel_first = accel.flatten()
+
+        print(f"[ATTITUDE INIT] Predicted gravity in body frame: {g_pred}")
+        print(f"[ATTITUDE INIT] First accel sample:              {accel_first}")
+        print(f"[ATTITUDE INIT] Alignment error: {np.linalg.norm(g_pred - accel_first):.3f} m/s²")
 
         # Create SE(2,3) with FC's initial rotation
         se23_init = SE23(R_init)
@@ -577,7 +586,7 @@ class TGEqF:
         At = np.zeros((18, 18))
         At[0:9, 0:9] = np.block([
             [np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 3))],
-            [SO3.wedge(col((0,0,-9.81))), np.zeros((3, 3)), np.zeros((3,3))],
+            [SO3.wedge(col((0,0,g))), np.zeros((3, 3)), np.zeros((3,3))],
             [np.zeros((3, 3)), np.eye(3), np.zeros((3, 3))]
         ])
         w_vec = u_0.as_W_vec()
@@ -616,32 +625,6 @@ class TGEqF:
         # Velocity measurement: C_v = [-wedge(v), I3, 0, 0, 0, 0]
         Ct[3:6, 0:3] = -SO3.wedge(xi_hat.T.x().as_vector())
         Ct[3:6, 3:6] = np.eye(3)
-
-        # Compute numerical Jacobian for bias columns (9:18)
-        # This captures how position and velocity depend on gyro/accel/virtual biases
-        epsilon = 1e-6
-
-        def measure_state(state_delta):
-            """Measure position and velocity given state perturbation."""
-            # Create perturbed state by group exponential
-            X_perturbed = SymGroup.exp(state_delta) * self.X_hat
-            # Get composed state
-            xi_perturbed = stateAction(X_perturbed, self.xi_0)
-            # Extract position and velocity
-            pos = xi_perturbed.T.w().as_vector().flatten()
-            vel = xi_perturbed.T.x().as_vector().flatten()
-            return np.hstack([pos, vel])
-
-        # Reference measurement
-        z_ref = np.hstack([xi_hat.T.w().as_vector().flatten(),
-                          xi_hat.T.x().as_vector().flatten()])
-
-        # Numerical differentiation for bias columns
-        for j in range(9, 18):  # Columns 9:18 correspond to biases
-            delta = np.zeros((18, 1))
-            delta[j, 0] = epsilon
-            z_perturbed = measure_state(delta)
-            Ct[:, j] = (z_perturbed - z_ref) / epsilon
 
         return Ct
     
@@ -706,6 +689,9 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
         elif USE_STATIC_DATA == "gravity":
             csv_in = "data/20241011_NIMBUS24_gravity_only_30s.csv"
             csv_out = "outputs/tg_eqf_output_gravity.csv"
+        elif USE_STATIC_DATA == "flight30s":
+            csv_in = "data/20241011_NIMBUS24_flight_first_30s.csv"
+            csv_out = "outputs/tg_eqf_output_flight30s.csv"
         elif USE_STATIC_DATA:
             csv_in = "data/20241011_NIMBUS24_truly_static_30s.csv"
             csv_out = "outputs/tg_eqf_output_static.csv"
@@ -743,7 +729,7 @@ def run(csv_in=None, csv_out="outputs/tg_eqf_output.csv"):
             continue
 
         gyro = row[[_C["gx"], _C["gy"], _C["gz"]]] * gyro_scale_factor  # rad/s
-        accel = row[[_C["ax"], _C["ay"], _C["az"]]] * g  # m/s²
+        accel = row[[_C["ax"], _C["ay"], _C["az"]]] * g * np.array([1, -1, 1])  # m/s² (ay negated: Y-axis mounted inverted)
 
 
         if not np.all(np.isfinite(np.concatenate([gyro, accel]))):

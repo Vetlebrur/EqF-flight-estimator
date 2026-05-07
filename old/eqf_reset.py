@@ -5,8 +5,8 @@ Implements reset methods for filter state management.
 """
 
 import numpy as np
-from tg_eqf import TGEqF
-import SE23xxse23
+from old.tg_eqf import TGEqF
+import old.SE23xxse23 as SE23xxse23
 
 
 def calculate_Delta(
