@@ -1,2 +1,3 @@
 [submodule "eqf-reference"]
-	url = https://github.com/Vetlebrur/equivaraint-symmetries-for-inertial-navigation-systems
+	path = eqf-reference
+	url = git@github.com:Vetlebrur/equivaraint-symmetries-for-inertial-navigation-systems.git
