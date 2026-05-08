@@ -3,6 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from scipy.spatial.transform import Rotation
 
 
 def safe_normalize(vec: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
@@ -19,7 +20,7 @@ def safe_normalize(vec: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
 # "full"    -> data/20241011_NIMBUS24_Flight_FC_Data.csv          (complete flight)
 # "30s"     -> data/20241011_NIMBUS24_Flight_FC_Data_30s.csv      (first 30 s)
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
-DATASET = "30s"
+DATASET = "full"
 
 # =============================================================================
 # Constants
@@ -39,9 +40,9 @@ _C = {
     "pn": 36,      # FC position North (m)
     "pe": 37,      # FC position East (m)
     "pd": 38,      # FC position Down (m)
-    "vn": 40,      # FC velocity North (m/s)
-    "ve": 41,      # FC velocity East (m/s)
-    "vd": 42,      # FC velocity Down (m/s)
+    "vn": 39,      # FC velocity North (m/s)
+    "ve": 40,      # FC velocity East (m/s)
+    "vd": 41,      # FC velocity Down (m/s)
     "roll": 29,    # FC roll (rad)
     "pitch": 30,   # FC pitch (rad)
     "yaw": 31,     # FC yaw (rad)
@@ -169,8 +170,8 @@ fc_t = np.array(fc_t)
 # Load output data
 out = np.genfromtxt(output_csv, delimiter=",", skip_header=1)
 
-# Apply NaN filtering early
-valid_rows = np.isfinite(out).all(axis=1)
+# Apply NaN filtering on core columns only (cols 0-28); mag cols 29-32 may be nan before first update
+valid_rows = np.isfinite(out[:, :29]).all(axis=1)
 out = out[valid_rows]
 
 if len(out) == 0:
@@ -208,15 +209,14 @@ if invalid_count > len(R_list) * 0.1:  # More than 10% invalid
     print(f"Warning: {invalid_count}/{len(R_list)} rotation matrices are invalid (det≠1 or not orthogonal)")
     print("This suggests incorrect orthonormalization in the filter upstream")
 
-# Extract Euler angles from output (columns 16-18)
-roll_arr = out[:, 16].copy()
-pitch_arr = out[:, 17].copy()
-yaw_arr = out[:, 18].copy()
-
-# Unwrap to track continuous rotation across multiple 2π revolutions
-roll_arr = np.unwrap(roll_arr, discont=np.pi)
-pitch_arr = np.unwrap(pitch_arr, discont=np.pi)
-yaw_arr = np.unwrap(yaw_arr, discont=np.pi)
+# Extract quaternion from output (columns 16-19: qw,qx,qy,qz)
+q_filter = out[:, 16:20]  # [w,x,y,z]
+filter_rot = Rotation.from_quat(q_filter[:, [1, 2, 3, 0]])  # scipy wants [x,y,z,w]
+# Convert to Euler (degrees) and unwrap to remove ±180° discontinuities
+filter_euler = filter_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
+yaw_arr   = np.unwrap(filter_euler[:, 0], discont=180)
+pitch_arr = np.unwrap(filter_euler[:, 1], discont=180)
+roll_arr  = np.unwrap(filter_euler[:, 2], discont=180)
 
 # Load diagnostic data if available
 diag_csv = output_csv.replace("tg_eqf_output", "tg_eqf_diagnostics")
@@ -305,18 +305,33 @@ ax4.set_title('Total Speed vs Time')
 ax4.legend(fontsize=8)
 ax4.grid(True)
 
-# Attitude (Euler angles) - Filter vs FC
+# Attitude - Angular error (quaternion-based, no gimbal lock)
 ax5 = fig.add_subplot(5, 2, 6)
-ax5.plot(t, np.degrees(roll_arr), 'r-', linewidth=1.5, label='Filter Roll')
-ax5.plot(t, np.degrees(pitch_arr), 'g-', linewidth=1.5, label='Filter Pitch')
-ax5.plot(t, np.degrees(yaw_arr), 'b-', linewidth=1.5, label='Filter Yaw')
+ax5.plot(t, roll_arr, 'r-', linewidth=1, label='Filter Roll (ZYX)')
+ax5.plot(t, pitch_arr, 'g-', linewidth=1, label='Filter Pitch (ZYX)')
+ax5.plot(t, yaw_arr, 'b-', linewidth=1, label='Filter Yaw (ZYX)')
 if len(fc_att) > 0:
-	ax5.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.7, label='FC Roll')
-	ax5.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.7, label='FC Pitch')
-	ax5.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.7, label='FC Yaw')
+    ax5.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.7, label='FC Roll')
+    ax5.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.7, label='FC Pitch')
+    ax5.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.7, label='FC Yaw')
+    # Angular error vs FC (interpolate FC quaternion to filter timestamps)
+    fc_rot = Rotation.from_euler('ZYX', np.column_stack([fc_att[:, 2], fc_att[:, 1], fc_att[:, 0]]))
+    fc_quat = fc_rot.as_quat()  # [x,y,z,w]
+    fc_q_wxyz = fc_quat[:, [3, 0, 1, 2]]  # [w,x,y,z]
+    fc_q_interp = np.column_stack([
+        np.interp(t, fc_att_t, fc_q_wxyz[:, i]) for i in range(4)
+    ])
+    norm = np.linalg.norm(fc_q_interp, axis=1, keepdims=True)
+    fc_q_interp = fc_q_interp / np.where(norm > 0, norm, 1.0)
+    dot = np.clip(np.abs(np.sum(q_filter * fc_q_interp, axis=1)), 0.0, 1.0)
+    ang_err = np.degrees(2.0 * np.arccos(dot))
+    ax5_err = ax5.twinx()
+    ax5_err.plot(t, ang_err, 'k-', linewidth=1.5, alpha=0.6, label='Angular error')
+    ax5_err.set_ylabel('Angular error [deg]', color='k')
+    ax5_err.legend(fontsize=7, loc='upper right')
 ax5.set_xlabel('Time [s]')
 ax5.set_ylabel('Angle [deg]')
-ax5.set_title('Attitude (Euler Angles) - Filter vs FC')
+ax5.set_title('Attitude - Filter vs FC (quaternion-derived)')
 ax5.legend(fontsize=7, ncol=2)
 ax5.grid(True)
 
@@ -334,11 +349,11 @@ ax6_accel.set_title('FC Acceleration Components')
 ax6_accel.legend(fontsize=7, ncol=2)
 ax6_accel.grid(True)
 
-# Bias estimates - Gyroscope (columns 19-21)
+# Bias estimates - Gyroscope (columns 20-22)
 ax6 = fig.add_subplot(5, 2, 7)
-bgx = out[:, 19]
-bgy = out[:, 20]
-bgz = out[:, 21]
+bgx = out[:, 20]
+bgy = out[:, 21]
+bgz = out[:, 22]
 ax6.plot(t, bgx, linewidth=1, label='Gyro X bias', alpha=0.7, color='red')
 ax6.plot(t, bgy, linewidth=1, label='Gyro Y bias', alpha=0.7, color='green')
 ax6.plot(t, bgz, linewidth=1, label='Gyro Z bias', alpha=0.7, color='blue')
@@ -348,11 +363,11 @@ ax6.set_title('Gyroscope Bias Estimates')
 ax6.legend(fontsize=8)
 ax6.grid(True)
 
-# Bias estimates - Accelerometer (columns 22-24)
+# Bias estimates - Accelerometer (columns 23-25)
 ax7 = fig.add_subplot(5, 2, 8)
-bax = out[:, 22]
-bay = out[:, 23]
-baz = out[:, 24]
+bax = out[:, 23]
+bay = out[:, 24]
+baz = out[:, 25]
 ax7.plot(t, bax, linewidth=1, label='Accel X bias', alpha=0.7, color='red')
 ax7.plot(t, bay, linewidth=1, label='Accel Y bias', alpha=0.7, color='green')
 ax7.plot(t, baz, linewidth=1, label='Accel Z bias', alpha=0.7, color='blue')
@@ -362,18 +377,36 @@ ax7.set_title('Accelerometer Bias Estimates')
 ax7.legend(fontsize=8)
 ax7.grid(True)
 
-# Bias estimates - Virtual bias (b_mu, columns 25-27)
+# Magnetometer attitude snapshot (columns 29-32: mag_qw,qx,qy,qz)
 ax8 = fig.add_subplot(5, 2, 10)
-bmux = out[:, 25]
-bmuy = out[:, 26]
-bmuz = out[:, 27]
-ax8.plot(t, bmux, linewidth=1, label='b_mu X', alpha=0.7, color='red')
-ax8.plot(t, bmuy, linewidth=1, label='b_mu Y', alpha=0.7, color='green')
-ax8.plot(t, bmuz, linewidth=1, label='b_mu Z', alpha=0.7, color='blue')
+if out.shape[1] > 32:
+    mag_q_raw = out[:, 29:33]  # [w,x,y,z]
+    mag_valid = np.isfinite(mag_q_raw).all(axis=1)
+    if mag_valid.any():
+        mag_rot = Rotation.from_quat(mag_q_raw[mag_valid][:, [1, 2, 3, 0]])  # scipy [x,y,z,w]
+        mag_euler = mag_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
+        ax8.plot(t[mag_valid], mag_euler[:, 2], 'r-', linewidth=1.5, label='Mag Roll')
+        ax8.plot(t[mag_valid], mag_euler[:, 1], 'g-', linewidth=1.5, label='Mag Pitch')
+        ax8.plot(t[mag_valid], mag_euler[:, 0], 'b-', linewidth=1.5, label='Mag Yaw')
+        # Angular error between mag snapshot and full filter estimate
+        filt_q_at_mag = q_filter[mag_valid]  # filter quaternion at same rows
+        dot_mag = np.clip(np.abs(np.sum(mag_q_raw[mag_valid] * filt_q_at_mag, axis=1)), 0.0, 1.0)
+        mag_ang_err = np.degrees(2.0 * np.arccos(dot_mag))
+        ax8_err = ax8.twinx()
+        ax8_err.plot(t[mag_valid], mag_ang_err, 'k-', linewidth=1.2, alpha=0.5, label='Mag vs filter err')
+        ax8_err.set_ylabel('Error [deg]', color='k')
+        ax8_err.legend(fontsize=7, loc='upper right')
+    if len(fc_att) > 0:
+        ax8.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.6, label='FC Roll')
+        ax8.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.6, label='FC Pitch')
+        ax8.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.6, label='FC Yaw')
+else:
+    ax8.text(0.5, 0.5, 'No mag attitude data\n(re-run eqf_filter.py)', ha='center', va='center',
+             transform=ax8.transAxes)
 ax8.set_xlabel('Time [s]')
-ax8.set_ylabel('Virtual Bias [m/s-like]')
-ax8.set_title('Virtual Position Bias (b_mu) Estimates')
-ax8.legend(fontsize=8)
+ax8.set_ylabel('Angle [deg]')
+ax8.set_title('Magnetometer Attitude Estimate (at mag updates)')
+ax8.legend(fontsize=7, ncol=2)
 ax8.grid(True)
 
 # Add title indicating data source
@@ -404,13 +437,13 @@ print(f"Max East: {np.max(py):.1f} m, Min: {np.min(py):.1f} m")
 print(f"Max Down: {np.max(pz):.1f} m, Min: {np.min(pz):.1f} m")
 print(f"Max speed: {np.max(speed):.1f} m/s")
 print(f"Final velocity: [{vx[-1]:.1f}, {vy[-1]:.1f}, {vz[-1]:.1f}] m/s")
-print(f"\nAttitude (Euler angles):")
-print(f"Final Roll:  {np.degrees(roll_arr[-1]):.1f} deg")
-print(f"Final Pitch: {np.degrees(pitch_arr[-1]):.1f} deg")
-print(f"Final Yaw:   {np.degrees(yaw_arr[-1]):.1f} deg")
-print(f"Max Roll:  {np.degrees(np.max(np.abs(roll_arr))):.1f} deg")
-print(f"Max Pitch: {np.degrees(np.max(np.abs(pitch_arr))):.1f} deg")
-print(f"Max Yaw:   {np.degrees(np.max(np.abs(yaw_arr))):.1f} deg")
+print(f"\nAttitude (quaternion-derived ZYX Euler):")
+print(f"Final Roll:  {roll_arr[-1]:.1f} deg")
+print(f"Final Pitch: {pitch_arr[-1]:.1f} deg")
+print(f"Final Yaw:   {yaw_arr[-1]:.1f} deg")
+print(f"Max |Roll|:  {np.max(np.abs(roll_arr)):.1f} deg")
+print(f"Max |Pitch|: {np.max(np.abs(pitch_arr)):.1f} deg")
+print(f"Max |Yaw|:   {np.max(np.abs(yaw_arr)):.1f} deg")
 
 # Create separate diagnostic figure if data available
 if diag_data is not None:

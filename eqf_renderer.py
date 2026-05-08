@@ -16,10 +16,10 @@ import numpy as np
 # =============================================================================
 
 TARGET_FPS = 25
-FC_CSV = Path("data/20241011_NIMBUS24_Flight_FC_Data.csv")
+FC_CSV = Path("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv")
 
 # Default to combined data (static + flight)
-DEFAULT_EQF_CSV = Path("outputs/tg_eqf_output.csv")
+DEFAULT_EQF_CSV = Path("outputs/tg_eqf_output_30s.csv")
 
 # FC CSV column indices
 _FC_T = 0
