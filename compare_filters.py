@@ -197,14 +197,14 @@ fig.suptitle(f'Filter Comparison — {data_type}', fontsize=14, fontweight='bold
 # --- 3D Trajectory ---
 ax = fig.add_subplot(3, 3, 1, projection='3d')
 if have_eqf:
-    ax.plot(eqf_pos[:, 0], eqf_pos[:, 1], eqf_pos[:, 2], 'b-', lw=1, label='EqF', alpha=0.8)
+    ax.plot(eqf_pos[:, 0], eqf_pos[:, 1], -eqf_pos[:, 2], 'b-', lw=1, label='EqF', alpha=0.8)
 if have_ekf:
-    ax.plot(ekf_pos[:, 0], ekf_pos[:, 1], ekf_pos[:, 2], 'r-', lw=1, label='EKF', alpha=0.8)
+    ax.plot(ekf_pos[:, 0], ekf_pos[:, 1], -ekf_pos[:, 2], 'r-', lw=1, label='EKF', alpha=0.8)
 if len(gnss_pos) > 0:
-    ax.plot(gnss_pos[:, 0], gnss_pos[:, 1], gnss_pos[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
+    ax.plot(gnss_pos[:, 0], gnss_pos[:, 1], -gnss_pos[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
 if len(fc_pos) > 0:
-    ax.plot(fc_pos[:, 0], fc_pos[:, 1], fc_pos[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
-ax.set_xlabel('North [m]'); ax.set_ylabel('East [m]'); ax.set_zlabel('Down [m]')
+    ax.plot(fc_pos[:, 0], fc_pos[:, 1], -fc_pos[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
+ax.set_xlabel('North [m]'); ax.set_ylabel('East [m]'); ax.set_zlabel('Altitude [m]')
 ax.set_title('3D Trajectory'); ax.legend(fontsize=7); ax.grid(True)
 
 # --- Position North ---
@@ -243,13 +243,13 @@ if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 1], 'm:', lw=1.5, la
 ax.set_ylabel('Velocity East [m/s]'); ax.set_title('Velocity — East')
 ax.legend(fontsize=7); ax.grid(True)
 
-# --- Velocity Down ---
+# --- Velocity Up ---
 ax = fig.add_subplot(3, 3, 6)
-if have_eqf:  ax.plot(eqf_t, eqf_vel[:, 2], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, ekf_vel[:, 2], 'r-', lw=1, label='EKF')
-if len(gnss_vel) > 0: ax.plot(gnss_t, gnss_vel[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Velocity Down [m/s]'); ax.set_title('Velocity — Down')
+if have_eqf:  ax.plot(eqf_t, -eqf_vel[:, 2], 'b-', lw=1, label='EqF')
+if have_ekf:  ax.plot(ekf_t, -ekf_vel[:, 2], 'r-', lw=1, label='EKF')
+if len(gnss_vel) > 0: ax.plot(gnss_t, -gnss_vel[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
+if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], -fc_vel[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
+ax.set_ylabel('Velocity Up [m/s]'); ax.set_title('Velocity — Up')
 ax.legend(fontsize=7); ax.grid(True)
 
 # --- Attitude: Roll ---

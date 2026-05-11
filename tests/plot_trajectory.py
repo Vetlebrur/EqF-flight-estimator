@@ -144,7 +144,7 @@ for i, row in enumerate(raw):
         ay = row[_C["ay"]]
         az = row[_C["az"]]
         if np.isfinite(ax) and np.isfinite(ay) and np.isfinite(az):
-            fc_accel.append(np.array([ax, ay, az]) * 9.81)  # Convert g to m/s²
+            fc_accel.append(np.array([float(ax), float(ay), float(az)]) * 9.81)  # Convert g to m/s²
             fc_accel_t.append(t)
 
         fc_t.append(t)
@@ -234,22 +234,22 @@ fig = plt.figure(figsize=(16, 20))
 
 # 3D trajectory
 ax1 = fig.add_subplot(5, 2, 1, projection='3d')
-ax1.plot(px, py, pz, 'b-', linewidth=1, label='Filter Estimate')
+ax1.plot(px, py, -pz, 'b-', linewidth=1, label='Filter Estimate')
 if len(gnss_pos) > 0:
-    ax1.plot(gnss_pos[:, 0], gnss_pos[:, 1], gnss_pos[:, 2], 'r--', linewidth=1, label='GNSS')
+    ax1.plot(gnss_pos[:, 0], gnss_pos[:, 1], -gnss_pos[:, 2], 'r--', linewidth=1, label='GNSS')
 if len(fc_pos) > 0:
-    ax1.plot(fc_pos[:, 0], fc_pos[:, 1], fc_pos[:, 2], 'g:', linewidth=1.5, label='FC Estimate')
-ax1.scatter(px[0], py[0], pz[0], c='blue', s=100, marker='o')
-ax1.scatter(px[-1], py[-1], pz[-1], c='blue', s=100, marker='s')
+    ax1.plot(fc_pos[:, 0], fc_pos[:, 1], -fc_pos[:, 2], 'g:', linewidth=1.5, label='FC Estimate')
+ax1.scatter(px[0], py[0], -pz[0], c='blue', s=100, marker='o')
+ax1.scatter(px[-1], py[-1], -pz[-1], c='blue', s=100, marker='s')
 if len(gnss_pos) > 0:
-    ax1.scatter(gnss_pos[0, 0], gnss_pos[0, 1], gnss_pos[0, 2], c='red', s=100, marker='o')
-    ax1.scatter(gnss_pos[-1, 0], gnss_pos[-1, 1], gnss_pos[-1, 2], c='red', s=100, marker='s')
+    ax1.scatter(gnss_pos[0, 0], gnss_pos[0, 1], -gnss_pos[0, 2], c='red', s=100, marker='o')
+    ax1.scatter(gnss_pos[-1, 0], gnss_pos[-1, 1], -gnss_pos[-1, 2], c='red', s=100, marker='s')
 if len(fc_pos) > 0:
-    ax1.scatter(fc_pos[0, 0], fc_pos[0, 1], fc_pos[0, 2], c='green', s=100, marker='o')
-    ax1.scatter(fc_pos[-1, 0], fc_pos[-1, 1], fc_pos[-1, 2], c='green', s=100, marker='s')
+    ax1.scatter(fc_pos[0, 0], fc_pos[0, 1], -fc_pos[0, 2], c='green', s=100, marker='o')
+    ax1.scatter(fc_pos[-1, 0], fc_pos[-1, 1], -fc_pos[-1, 2], c='green', s=100, marker='s')
 ax1.set_xlabel('North [m]')
 ax1.set_ylabel('East [m]')
-ax1.set_zlabel('Down [m]')
+ax1.set_zlabel('Altitude [m]')
 ax1.set_title('3D Trajectory')
 ax1.legend(fontsize=8)
 ax1.grid(True)
@@ -258,15 +258,15 @@ ax1.grid(True)
 ax2 = fig.add_subplot(5, 2, 2)
 ax2.plot(t, px, 'b-', label='Filter North', linewidth=1)
 ax2.plot(t, py, 'b-', label='Filter East', linewidth=1, alpha=0.7)
-ax2.plot(t, pz, 'b-', label='Filter Down', linewidth=1, alpha=0.5)
+ax2.plot(t, -pz, 'b-', label='Filter Alt', linewidth=1, alpha=0.5)
 if len(gnss_pos) > 0:
     ax2.plot(gnss_t, gnss_pos[:, 0], 'r--', label='GNSS North', linewidth=1)
     ax2.plot(gnss_t, gnss_pos[:, 1], 'r--', label='GNSS East', linewidth=1, alpha=0.7)
-    ax2.plot(gnss_t, gnss_pos[:, 2], 'r--', label='GNSS Down', linewidth=1, alpha=0.5)
+    ax2.plot(gnss_t, -gnss_pos[:, 2], 'r--', label='GNSS Alt', linewidth=1, alpha=0.5)
 if len(fc_pos) > 0:
     ax2.plot(fc_t, fc_pos[:, 0], 'g:', label='FC North', linewidth=1.5)
     ax2.plot(fc_t, fc_pos[:, 1], 'g:', label='FC East', linewidth=1.5, alpha=0.7)
-    ax2.plot(fc_t, fc_pos[:, 2], 'g:', label='FC Down', linewidth=1.5, alpha=0.5)
+    ax2.plot(fc_t, -fc_pos[:, 2], 'g:', label='FC Alt', linewidth=1.5, alpha=0.5)
 ax2.set_xlabel('Time [s]')
 ax2.set_ylabel('Position [m]')
 ax2.set_title('Position Components vs Time')
@@ -277,15 +277,15 @@ ax2.grid(True)
 ax3 = fig.add_subplot(5, 2, 3)
 ax3.plot(t, vx, 'b-', label='Filter North', linewidth=1)
 ax3.plot(t, vy, 'b-', label='Filter East', linewidth=1, alpha=0.7)
-ax3.plot(t, vz, 'b-', label='Filter Down', linewidth=1, alpha=0.5)
+ax3.plot(t, -vz, 'b-', label='Filter Up', linewidth=1, alpha=0.5)
 if len(gnss_vel) > 0:
     ax3.plot(gnss_t, gnss_vel[:, 0], 'r--', label='GNSS North', linewidth=1)
     ax3.plot(gnss_t, gnss_vel[:, 1], 'r--', label='GNSS East', linewidth=1, alpha=0.7)
-    ax3.plot(gnss_t, gnss_vel[:, 2], 'r--', label='GNSS Down', linewidth=1, alpha=0.5)
+    ax3.plot(gnss_t, -gnss_vel[:, 2], 'r--', label='GNSS Up', linewidth=1, alpha=0.5)
 if len(fc_vel) > 0:
     ax3.plot(fc_t, fc_vel[:, 0], 'g:', label='FC North', linewidth=1.5)
     ax3.plot(fc_t, fc_vel[:, 1], 'g:', label='FC East', linewidth=1.5, alpha=0.7)
-    ax3.plot(fc_t, fc_vel[:, 2], 'g:', label='FC Down', linewidth=1.5, alpha=0.5)
+    ax3.plot(fc_t, -fc_vel[:, 2], 'g:', label='FC Up', linewidth=1.5, alpha=0.5)
 ax3.set_xlabel('Time [s]')
 ax3.set_ylabel('Velocity [m/s]')
 ax3.set_title('Velocity Components vs Time')
@@ -314,21 +314,6 @@ if len(fc_att) > 0:
     ax5.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.7, label='FC Roll')
     ax5.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.7, label='FC Pitch')
     ax5.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.7, label='FC Yaw')
-    # Angular error vs FC (interpolate FC quaternion to filter timestamps)
-    fc_rot = Rotation.from_euler('ZYX', np.column_stack([fc_att[:, 2], fc_att[:, 1], fc_att[:, 0]]))
-    fc_quat = fc_rot.as_quat()  # [x,y,z,w]
-    fc_q_wxyz = fc_quat[:, [3, 0, 1, 2]]  # [w,x,y,z]
-    fc_q_interp = np.column_stack([
-        np.interp(t, fc_att_t, fc_q_wxyz[:, i]) for i in range(4)
-    ])
-    norm = np.linalg.norm(fc_q_interp, axis=1, keepdims=True)
-    fc_q_interp = fc_q_interp / np.where(norm > 0, norm, 1.0)
-    dot = np.clip(np.abs(np.sum(q_filter * fc_q_interp, axis=1)), 0.0, 1.0)
-    ang_err = np.degrees(2.0 * np.arccos(dot))
-    ax5_err = ax5.twinx()
-    ax5_err.plot(t, ang_err, 'k-', linewidth=1.5, alpha=0.6, label='Angular error')
-    ax5_err.set_ylabel('Angular error [deg]', color='k')
-    ax5_err.legend(fontsize=7, loc='upper right')
 ax5.set_xlabel('Time [s]')
 ax5.set_ylabel('Angle [deg]')
 ax5.set_title('Attitude - Filter vs FC (quaternion-derived)')
@@ -385,17 +370,12 @@ if out.shape[1] > 32:
     if mag_valid.any():
         mag_rot = Rotation.from_quat(mag_q_raw[mag_valid][:, [1, 2, 3, 0]])  # scipy [x,y,z,w]
         mag_euler = mag_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
-        ax8.plot(t[mag_valid], mag_euler[:, 2], 'r-', linewidth=1.5, label='Mag Roll')
-        ax8.plot(t[mag_valid], mag_euler[:, 1], 'g-', linewidth=1.5, label='Mag Pitch')
-        ax8.plot(t[mag_valid], mag_euler[:, 0], 'b-', linewidth=1.5, label='Mag Yaw')
-        # Angular error between mag snapshot and full filter estimate
-        filt_q_at_mag = q_filter[mag_valid]  # filter quaternion at same rows
-        dot_mag = np.clip(np.abs(np.sum(mag_q_raw[mag_valid] * filt_q_at_mag, axis=1)), 0.0, 1.0)
-        mag_ang_err = np.degrees(2.0 * np.arccos(dot_mag))
-        ax8_err = ax8.twinx()
-        ax8_err.plot(t[mag_valid], mag_ang_err, 'k-', linewidth=1.2, alpha=0.5, label='Mag vs filter err')
-        ax8_err.set_ylabel('Error [deg]', color='k')
-        ax8_err.legend(fontsize=7, loc='upper right')
+        mag_roll  =  np.unwrap(mag_euler[:, 2], discont=180)
+        mag_pitch =  np.unwrap(mag_euler[:, 1], discont=180)
+        mag_yaw   =  np.unwrap(mag_euler[:, 0], discont=180)
+        ax8.plot(t[mag_valid], mag_roll,  'r-', linewidth=1.5, label='Mag Roll')
+        ax8.plot(t[mag_valid], mag_pitch, 'g-', linewidth=1.5, label='Mag Pitch')
+        ax8.plot(t[mag_valid], mag_yaw,   'b-', linewidth=1.5, label='Mag Yaw')
     if len(fc_att) > 0:
         ax8.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.6, label='FC Roll')
         ax8.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.6, label='FC Pitch')
@@ -434,7 +414,7 @@ if len(fc_pos) > 0:
     print(f"FC start position: [{fc_pos[0, 0]:.1f}, {fc_pos[0, 1]:.1f}, {fc_pos[0, 2]:.1f}] m")
 print(f"\nMax North: {np.max(px):.1f} m, Min: {np.min(px):.1f} m")
 print(f"Max East: {np.max(py):.1f} m, Min: {np.min(py):.1f} m")
-print(f"Max Down: {np.max(pz):.1f} m, Min: {np.min(pz):.1f} m")
+print(f"Max Altitude: {np.max(-pz):.1f} m, Min: {np.min(-pz):.1f} m")
 print(f"Max speed: {np.max(speed):.1f} m/s")
 print(f"Final velocity: [{vx[-1]:.1f}, {vy[-1]:.1f}, {vz[-1]:.1f}] m/s")
 print(f"\nAttitude (quaternion-derived ZYX Euler):")

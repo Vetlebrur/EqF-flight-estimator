@@ -52,7 +52,7 @@ P_0_blocks = [
 Q_rot_var = 1e-2               # [0:3] rotation process noise
 Q_vel_var = 1e-1                # [3:6] velocity process noise
 Q_pos_var = 1e-2                # [6:9] position process noise
-Q_gyro_bias_var = (1e-3)**2     # [9:12] gyro bias random walk (very tight)
+Q_gyro_bias_var = (1e-2)**2     # [9:12] gyro bias random walk (very tight)
 Q_accel_bias_var = (1e-2)**2    # [12:15] accel bias random walk (very tight)
 Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
 
@@ -63,7 +63,7 @@ R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3.log(R_err) in radians.
 # R_mag=400.0 rad² tuned via 48-config sweep with correct body frame (accel=[ax,ay,az]).
-R_mag_var = 400.0  # rad²
+R_mag_var = 100.0  # rad²
 
 # TRIAD-derived full attitude update noise (rad²)
 # Keep large — TRIAD from a vibrating rocket pad is noisy; let gyro-integration dominate
@@ -455,12 +455,7 @@ class TGEqF:
     # =========================================================================
 
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
-        """Update state using normalised body-frame magnetometer measurement.
-
-        Args:
-            mag: body-frame magnetometer measurement (3,), axis-remapped, no bias correction
-            t: timestamp (optional)
-        """
+        """Yaw-only update from body-frame magnetometer — projects innovation onto NED-Z axis."""
         # Gate on measurement norm
         MAG_NORM_THRESHOLD = 0.15  # Loosened threshold to accept more measurements
         mag_norm = np.linalg.norm(mag)
@@ -476,34 +471,47 @@ class TGEqF:
         y_hat = R_hat.T @ MAG_FIELD_NED.flatten()
         y_hat /= np.linalg.norm(y_hat) + 1e-8
 
-        # Innovation: shortest-arc rotation from predicted to measured body-frame field.
-        # delta = 0 when y_hat == mag (correct state). Bounded in [-π, π] rad.
+        # Full 3D rotation innovation (shortest-arc rotation from predicted to measured)
         R_err = from_two_vectors_rotation(y_hat, mag)
-        delta = SO3.log(SO3(R_err))  # (3,1), radians
+        delta_3d = SO3.log(SO3(R_err))  # (3,1), radians
 
-        # C matrix: linearization of (y_hat × mag) w.r.t. attitude error — same as cross-product
-        C = np.zeros((3, 18))
-        C[0:3, 0:3] = -SO3.wedge(y_hat.reshape(-1, 1))
+        # Project onto body-Z (body yaw axis) → scalar yaw innovation
+        body_z = np.array([[0.0], [0.0], [1.0]])
+        delta_yaw = (body_z.T @ delta_3d).item()
+
+        MAG_YAW_GATE = 0.01  # rad — skip when heading innovation is negligible
+        if abs(delta_yaw) < MAG_YAW_GATE:
+            return
+
+        # 1×18 C matrix: full 3×3 attitude block projected onto yaw axis
+        C_att = -SO3.wedge(y_hat.reshape(-1, 1))  # (3,3)
+        C_yaw = np.zeros((1, 18))
+        C_yaw[0, 0:3] = (body_z.T @ C_att).flatten()
+
+        R_yaw = np.array([[self.R_mag[0, 0]]])  # scalar noise variance (1,1)
 
         # Kalman update
-        S = C @ self.Sigma @ C.T + self.R_mag
-        K = self.Sigma @ C.T @ np.linalg.inv(S)
-        Delta = self.innovationLift @ K @ delta
+        S = C_yaw @ self.Sigma @ C_yaw.T + R_yaw  # (1,1)
+        K = self.Sigma @ C_yaw.T @ np.linalg.inv(S)  # (18,1)
+        Delta = self.innovationLift @ K * delta_yaw  # (18,1)
 
         # Compute ANIS for filter diagnostics
-        anis = self.compute_anis(delta, S)
+        anis = self.compute_anis(np.array([[delta_yaw]]), S)
         if t is not None and anis is not None:
             self.update_times.append(('mag', t, anis))
 
         self.X_hat = SymGroup.exp(Delta) * self.X_hat  # type: ignore[attr-defined]
         I = np.eye(18)
-        IKC = I - K @ C
-        self.Sigma = IKC @ self.Sigma @ IKC.T + K @ self.R_mag @ K.T  # Joseph form
+        IKC = I - K @ C_yaw
+        self.Sigma = IKC @ self.Sigma @ IKC.T + K @ R_yaw @ K.T  # Joseph form
         self.Sigma = sym(self.Sigma)
 
-        # Snapshot attitude after mag update as quaternion (singularity-free)
+        # Snapshot attitude after mag update; swap ZYX roll↔yaw slots to match FC convention
         R_post = self.xi_hat().T.R().as_matrix()
-        q = ScipyRot.from_matrix(R_post).as_quat()  # [x,y,z,w]
+        _rot = ScipyRot.from_matrix(R_post)
+        _e = _rot.as_euler('ZYX')
+        _rot_mapped = ScipyRot.from_euler('ZYX', [_e[2], _e[1], _e[0]])  # swap roll↔yaw
+        q = _rot_mapped.as_quat()  # [x,y,z,w]
         self.mag_q = np.array([q[3], q[0], q[1], q[2]])  # → [w,x,y,z]
 
         # Track successful magnetometer updates
@@ -871,10 +879,14 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
             filt.initialize_attitude_triad(mag)
 
         # Magnetometer update
+        _DEBUG_WINDOW = 75.0 <= t <= 85.0
         if filt.attitude_initialized and (prev_mag is None or not np.allclose(prev_mag, mag)):
+            _b_before = filt.xi_hat().b[3:6].flatten().copy() if _DEBUG_WINDOW else None
             filt.magnetometer_update(mag, t=t)
             prev_mag = mag
-
+            if _DEBUG_WINDOW:
+                _b_after = filt.xi_hat().b[3:6].flatten()
+                print(f"[DBG t={t:.2f}] MAG update  | ba_before={_b_before}  ba_after={_b_after}  delta={_b_after - _b_before}")
 
         lat = row[_C["lat"]]
         lon = row[_C["lon"]]
@@ -889,8 +901,16 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
                 alt = row[_C["alt"]] / 1000.0
                 pos_NED = _gps_to_ned(lat, lon, alt, lat0, lon0, alt0)
                 vel_NED = np.array([row[_C["gps_vn"]], row[_C["gps_ve"]], row[_C["gps_vd"]]]) / 1000.0
+                if _DEBUG_WINDOW:
+                    _b_before = filt.xi_hat().b[3:6].flatten().copy()
+                    _pos_est = filt.xi_hat().T.w().as_vector().flatten()
+                    _vel_est = filt.xi_hat().T.x().as_vector().flatten()
+                    print(f"[DBG t={t:.2f}] GNSS update | pos_inn={pos_NED - _pos_est}  vel_inn={vel_NED - _vel_est}")
                 filt.GNSS_update(pos_NED, vel_NED, t)
                 gnss_count += 1
+                if _DEBUG_WINDOW:
+                    _b_after = filt.xi_hat().b[3:6].flatten()
+                    print(f"[DBG t={t:.2f}]              | ba_before={_b_before}  ba_after={_b_after}  delta={_b_after - _b_before}")
 
 
         out.append(filt.output_row(t))
