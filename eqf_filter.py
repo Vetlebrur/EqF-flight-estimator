@@ -774,7 +774,7 @@ def _gps_to_ned(lat: float, lon: float, alt: float, lat0: float, lon0: float, al
 # MAG_AXIS_SIGNS: sign applied to each body axis after permutation
 #   default [1, 1, 1]; negate if sensor axis is mounted in opposite direction
 MAG_AXIS_ORDER = np.array([0, 2, 1])   # sensor: mx→body X, mz→body Y, my→body Z
-MAG_AXIS_SIGNS = np.array([1.0, -1.0, 1.0])    # tuned: best of 48 combinations by angular RMSE
+MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])   # tuned: confirmed by FC/GNSS yaw alignment
 
 def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         mag_axis_order: np.ndarray | None = None,

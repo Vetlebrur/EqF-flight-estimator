@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation as ScipyRot
 # "full"    -> data/20241011_NIMBUS24_Flight_FC_Data.csv
 # "30s"     -> data/20241011_NIMBUS24_Flight_FC_Data_30s.csv
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv
-DATASET = "30s"
+DATASET = "full"
 
 GNSS_UPDATE_FREQ_HZ = 1.0
 
@@ -24,16 +24,30 @@ GNSS_UPDATE_FREQ_HZ = 1.0
 g = 9.81
 R_EARTH = 6_378_137.0
 
-# Process noise
-Q_pos       = np.eye(3) * (0.01**2)
-Q_vel       = np.eye(3) * (0.1**2)
-Q_att       = np.eye(3) * (0.001**2)
-Q_gyro_bias = np.eye(3) * (1e-6**2)
-Q_accel_bias = np.eye(3) * (1e-6**2)
+# Magnetometer reference (WMM2025, Azores) — same as eqf_filter.py
+WMM_DECLINATION = -13.4
+WMM_INCLINATION =  56.8
+_dec_r = np.radians(WMM_DECLINATION)
+_inc_r = np.radians(WMM_INCLINATION)
+_wmm_h = np.cos(_inc_r)
+_wmm_raw = np.array([_wmm_h * np.cos(_dec_r), _wmm_h * np.sin(_dec_r), np.sin(_inc_r)])
+MAG_FIELD_NED = _wmm_raw / np.linalg.norm(_wmm_raw)
 
-# Measurement noise
-R_gnss_pos = np.eye(3) * (5.0**2)
-R_gnss_vel = np.eye(3) * (0.1**2)
+# Mag sensor→body axis config — tuned same as eqf_filter.py
+MAG_AXIS_ORDER = np.array([0, 2, 1])
+MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])
+
+# Process noise — matched to eqf_filter.py
+Q_pos        = np.eye(3) * 1e-2
+Q_vel        = np.eye(3) * 1e-1
+Q_att        = np.eye(3) * 1e-2
+Q_gyro_bias  = np.eye(3) * (1e-3)**2
+Q_accel_bias = np.eye(3) * (1e-2)**2
+
+# Measurement noise — matched to eqf_filter.py
+R_gnss_pos = np.eye(3) * 1.0
+R_gnss_vel = np.eye(3) * 5.0
+R_mag_ekf  = np.eye(3) * 0.05   # unit-vector noise (~13° per axis)
 
 
 # =============================================================================
@@ -77,6 +91,31 @@ def normalize_dcm(R: np.ndarray) -> np.ndarray:
     return U @ VT
 
 
+def triad_attitude(accel_body: np.ndarray, mag_body: np.ndarray) -> "np.ndarray | None":
+    """Compute body→NED rotation matrix via TRIAD from accelerometer + magnetometer."""
+    g_body = -accel_body
+    g_n = np.linalg.norm(g_body)
+    m_n = np.linalg.norm(mag_body)
+    if g_n < 1.0 or m_n < 0.01:
+        return None
+    g_b = g_body / g_n
+    m_b = mag_body / m_n
+
+    g_ned = np.array([0.0, 0.0, 1.0])
+    m_ned = MAG_FIELD_NED.flatten()
+
+    cross_b = np.cross(g_b, m_b)
+    cross_n = np.cross(g_ned, m_ned)
+    if np.linalg.norm(cross_b) < 1e-6 or np.linalg.norm(cross_n) < 1e-6:
+        return None
+    t2_b = cross_b / np.linalg.norm(cross_b)
+    t2_n = cross_n / np.linalg.norm(cross_n)
+
+    T_body = np.column_stack([g_b,   t2_b,   np.cross(g_b,   t2_b)])
+    T_ned  = np.column_stack([g_ned, t2_n,   np.cross(g_ned, t2_n)])
+    return T_ned @ T_body.T
+
+
 # =============================================================================
 # EKF Filter
 # =============================================================================
@@ -94,11 +133,11 @@ class EKF:
     def __init__(self) -> None:
         self.x = np.zeros(self.STATE_SIZE)
         self.cov: np.ndarray = np.diag([
-            100.0**2, 100.0**2, 100.0**2,
-            10.0**2,  10.0**2,  10.0**2,
-            (10*np.pi/180)**2, (10*np.pi/180)**2, (10*np.pi/180)**2,
-            0.01**2, 0.01**2, 0.01**2,
-            0.5**2,  0.5**2,  0.5**2,
+            1.0**2,  1.0**2,  1.0**2,    # pos (m²)
+            10.0**2, 10.0**2, 10.0**2,   # vel (m/s)²
+            1.0**2,  1.0**2,  1.0**2,    # att (rad²)
+            0.1**2,  0.1**2,  0.1**2,    # gyro bias (rad/s)²
+            0.1**2,  0.1**2,  0.1**2,    # accel bias (m/s²)²
         ])
         self.t_prev: float | None = None
         self.t_last_gnss: float | None = None
@@ -121,7 +160,7 @@ class EKF:
         gyro_unbiased  = gyro_meas  - b_gyro
 
         pos_new = self.x[self.PX:self.PZ+1] + self.x[self.VX:self.VZ+1] * dt
-        vel_new = self.x[self.VX:self.VZ+1] + (R @ accel_unbiased - np.array([0, 0, g])) * dt
+        vel_new = self.x[self.VX:self.VZ+1] + (R @ accel_unbiased + np.array([0, 0, g])) * dt
 
         w_mag = np.linalg.norm(gyro_unbiased)
         R_new = R @ expm(skew(gyro_unbiased) * dt) if w_mag > 1e-8 else R
@@ -192,6 +231,43 @@ class EKF:
         self.cov = I_KH @ self.cov @ I_KH.T + K @ R_meas @ K.T
         self.cov = 0.5 * (self.cov + self.cov.T)
 
+    def update_mag(self, mag_body: np.ndarray) -> None:
+        """Standard EKF magnetometer update using unit-vector measurement model.
+
+        Only corrects attitude states — mag direction does not constrain pos/vel.
+        """
+        mag_n = np.linalg.norm(mag_body)
+        if mag_n < 1e-6:
+            return
+        mag_body = mag_body / mag_n
+
+        roll, pitch, yaw = self.x[self.ROLL:self.YAW+1]
+        R = euler_to_dcm(roll, pitch, yaw)
+        z_pred = R.T @ MAG_FIELD_NED
+
+        y = mag_body - z_pred
+
+        eps = 1e-7
+        H = np.zeros((3, self.STATE_SIZE))
+        for i in range(3):
+            x_p = self.x.copy()
+            x_p[self.ROLL + i] += eps
+            R_p = euler_to_dcm(*x_p[self.ROLL:self.YAW+1])
+            H[:, self.ROLL + i] = (R_p.T @ MAG_FIELD_NED - z_pred) / eps
+
+        S = H @ self.cov @ H.T + R_mag_ekf
+        K = self.cov @ H.T @ np.linalg.inv(S)
+
+        # Only apply correction to attitude and gyro-bias states; magnetometer
+        # direction does not directly constrain position or velocity.
+        K_att = np.zeros_like(K)
+        K_att[self.ROLL:self.BGZ+1, :] = K[self.ROLL:self.BGZ+1, :]
+
+        self.x = self.x + K_att @ y
+        I_KH = np.eye(self.STATE_SIZE) - K_att @ H
+        self.cov = I_KH @ self.cov @ I_KH.T + K_att @ R_mag_ekf @ K_att.T
+        self.cov = 0.5 * (self.cov + self.cov.T)
+
     def output_row(self, t: float) -> list[Any]:
         """Extract state as output row with quaternion attitude (same layout as EqF cols 0-25)."""
         roll, pitch, yaw = self.x[self.ROLL:self.YAW+1]
@@ -246,6 +322,9 @@ _C = {
     "gx":     15,
     "gy":     16,
     "gz":     17,
+    "mx":     18,
+    "my":     19,
+    "mz":     20,
 }
 
 _DATASETS = {
@@ -273,8 +352,6 @@ def run(csv_in: str | None = None, csv_out: str | None = None) -> None:
     print(f"Loaded {len(raw)} rows from {csv_in}")
     os.makedirs(os.path.dirname(csv_out), exist_ok=True)
 
-    gyro_scale = (2000.0 / 32768.0) * (np.pi / 180.0)  # raw ADC → rad/s
-
     valid = (raw[:, _C["lat"]] != 0) & (raw[:, _C["lon"]] != 0)
     first = int(np.argmax(valid))
     lat0 = raw[first, _C["lat"]]
@@ -287,19 +364,60 @@ def run(csv_in: str | None = None, csv_out: str | None = None) -> None:
     last_progress_t = 0.0
     gnss_period = 1.0 / GNSS_UPDATE_FREQ_HZ
 
+    # TRIAD initialization — same approach as eqf_filter.py
+    MIN_PRE_INIT = 5
+    accel_accum = np.zeros(3)
+    accel_n = 0
+    attitude_initialized = False
+    for _row in raw:
+        if not np.isfinite(_row[_C["t"]]):
+            continue
+        _accel = _row[[_C["ax"], _C["ay"], _C["az"]]] * g
+        _mag_raw = _row[[_C["mx"], _C["my"], _C["mz"]]]
+        if not np.all(np.isfinite(_accel)) or not np.all(np.isfinite(_mag_raw)):
+            continue
+        accel_accum += _accel
+        accel_n += 1
+        _mag = _mag_raw[MAG_AXIS_ORDER] * MAG_AXIS_SIGNS
+        _mag_n = np.linalg.norm(_mag)
+        if _mag_n > 1e-6 and accel_n >= MIN_PRE_INIT:
+            R_init = triad_attitude(accel_accum / accel_n, _mag / _mag_n)
+            if R_init is not None:
+                roll0, pitch0, yaw0 = dcm_to_euler(R_init)
+                filt.x[filt.ROLL]  = roll0
+                filt.x[filt.PITCH] = pitch0
+                filt.x[filt.YAW]   = yaw0
+                attitude_initialized = True
+                print(f"TRIAD init: roll={np.degrees(roll0):.1f}°  pitch={np.degrees(pitch0):.1f}°  yaw={np.degrees(yaw0):.1f}°")
+            break
+
+    prev_mag = None
+
     for i, row in enumerate(raw):
         t = row[_C["t"]]
         if not np.isfinite(t):
             continue
 
-        # Sensor→body frame: az→X(N), ay→Y(E), -ax→Z(D)  (confirmed from accel integration vs GNSS)
-        gyro  = row[[_C["gz"], _C["gy"], _C["gx"]]] * gyro_scale * np.array([1.0, 1.0, -1.0])
-        accel = row[[_C["az"], _C["ay"], _C["ax"]]] * g           * np.array([1.0, 1.0, -1.0])
+        # Sensor→body frame: direct mapping, same as eqf_filter.py
+        gyro  = row[[_C["gx"], _C["gy"], _C["gz"]]] * (np.pi / 180.0)
+        accel = row[[_C["ax"], _C["ay"], _C["az"]]] * g
 
         if not np.all(np.isfinite(np.concatenate([gyro, accel]))):
             continue
 
         filt.predict(t, accel, gyro)
+
+        # Magnetometer update
+        mag_raw = row[[_C["mx"], _C["my"], _C["mz"]]]
+        if np.all(np.isfinite(mag_raw)) and attitude_initialized:
+            mag = mag_raw[MAG_AXIS_ORDER] * MAG_AXIS_SIGNS
+            mag_norm = np.linalg.norm(mag)
+            if mag_norm > 1e-6:
+                mag_unit = mag / mag_norm
+                if prev_mag is None or not np.allclose(prev_mag, mag_unit):
+                    filt.update_mag(mag_unit)
+                    prev_mag = mag_unit
+
         out.append(filt.output_row(t))
 
         lat = row[_C["lat"]]

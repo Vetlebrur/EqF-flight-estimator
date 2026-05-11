@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 # Configuration — match DATASET in eqf_filter.py and ekf_filter.py
 # =============================================================================
 
-DATASET = "30s"
+DATASET = "full"
 
 _DATASETS = {
     "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",
@@ -98,12 +98,6 @@ def quat_to_euler_deg(q_wxyz: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nd
     return roll, pitch, yaw
 
 
-def angular_error_deg(q_filt: np.ndarray, q_fc: np.ndarray) -> np.ndarray:
-    """Quaternion angular error in degrees between two [w,x,y,z] arrays."""
-    dot = np.clip(np.abs(np.sum(q_filt * q_fc, axis=1)), 0.0, 1.0)
-    return np.degrees(2.0 * np.arccos(dot))
-
-
 # =============================================================================
 # Load FC / GNSS reference data
 # =============================================================================
@@ -154,12 +148,10 @@ fc_att    = np.array(fc_att)    if fc_att    else np.empty((0, 3))
 fc_att_t  = np.array(fc_att_t)
 fc_t      = np.array(fc_t)
 
-# Build FC quaternion array for angular error computation
-fc_q_wxyz: np.ndarray = np.empty((0, 4))
-if len(fc_att) > 0:
-    fc_rot   = Rotation.from_euler('ZYX', fc_att[:, [2, 1, 0]])  # [yaw, pitch, roll]
-    fc_q_xyzw = fc_rot.as_quat()
-    fc_q_wxyz = fc_q_xyzw[:, [3, 0, 1, 2]]
+# Unwrap FC Euler angles (stored in radians) and convert to degrees
+fc_roll_deg  = np.degrees(np.unwrap(fc_att[:, 0])) if len(fc_att) > 0 else np.zeros(0)
+fc_pitch_deg = np.degrees(np.unwrap(fc_att[:, 1])) if len(fc_att) > 0 else np.zeros(0)
+fc_yaw_deg   = np.degrees(np.unwrap(fc_att[:, 2])) if len(fc_att) > 0 else np.zeros(0)
 
 # =============================================================================
 # Load filter outputs
@@ -265,7 +257,7 @@ ax = fig.add_subplot(3, 3, 7)
 if have_eqf: ax.plot(eqf_t, eqf_roll, 'b-', lw=1, label='EqF')
 if have_ekf: ax.plot(ekf_t, ekf_roll, 'r-', lw=1, label='EKF')
 if len(fc_att) > 0:
-    ax.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'm--', lw=1, alpha=0.7, label='FC')
+    ax.plot(fc_att_t, fc_roll_deg, 'm--', lw=1, alpha=0.7, label='FC')
 ax.set_xlabel('Time [s]'); ax.set_ylabel('Roll [deg]'); ax.set_title('Attitude — Roll')
 ax.legend(fontsize=7); ax.grid(True)
 
@@ -274,31 +266,17 @@ ax = fig.add_subplot(3, 3, 8)
 if have_eqf: ax.plot(eqf_t, eqf_pitch, 'b-', lw=1, label='EqF')
 if have_ekf: ax.plot(ekf_t, ekf_pitch, 'r-', lw=1, label='EKF')
 if len(fc_att) > 0:
-    ax.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'm--', lw=1, alpha=0.7, label='FC')
+    ax.plot(fc_att_t, fc_pitch_deg, 'm--', lw=1, alpha=0.7, label='FC')
 ax.set_xlabel('Time [s]'); ax.set_ylabel('Pitch [deg]'); ax.set_title('Attitude — Pitch')
 ax.legend(fontsize=7); ax.grid(True)
 
-# --- Angular Error vs FC ---
+# --- Attitude: Yaw ---
 ax = fig.add_subplot(3, 3, 9)
-if len(fc_att) > 0 and len(fc_q_wxyz) > 0:
-    def interp_q(t_filt: np.ndarray, q_filt: np.ndarray) -> np.ndarray:
-        """Interpolate filter quaternion to FC attitude timestamps."""
-        return np.column_stack([
-            np.interp(fc_att_t, t_filt, q_filt[:, i]) for i in range(4)
-        ])
-
-    if have_eqf:
-        eq = interp_q(eqf_t, eqf_q)
-        norm = np.linalg.norm(eq, axis=1, keepdims=True)
-        eq /= np.where(norm > 0, norm, 1.0)
-        ax.plot(fc_att_t, angular_error_deg(eq, fc_q_wxyz), 'b-', lw=1, label='EqF error')
-    if have_ekf:
-        ek = interp_q(ekf_t, ekf_q)
-        norm = np.linalg.norm(ek, axis=1, keepdims=True)
-        ek /= np.where(norm > 0, norm, 1.0)
-        ax.plot(fc_att_t, angular_error_deg(ek, fc_q_wxyz), 'r-', lw=1, label='EKF error')
-ax.set_xlabel('Time [s]'); ax.set_ylabel('Angular error [deg]')
-ax.set_title('Attitude Angular Error vs FC')
+if have_eqf: ax.plot(eqf_t, eqf_yaw, 'b-', lw=1, label='EqF')
+if have_ekf: ax.plot(ekf_t, ekf_yaw, 'r-', lw=1, label='EKF')
+if len(fc_att) > 0:
+    ax.plot(fc_att_t, fc_yaw_deg, 'm--', lw=1, alpha=0.7, label='FC')
+ax.set_xlabel('Time [s]'); ax.set_ylabel('Yaw [deg]'); ax.set_title('Attitude — Yaw')
 ax.legend(fontsize=7); ax.grid(True)
 
 plt.tight_layout(rect=(0, 0, 1, 0.97))
