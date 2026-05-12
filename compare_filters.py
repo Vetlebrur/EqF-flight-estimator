@@ -207,76 +207,108 @@ if len(fc_pos) > 0:
 ax.set_xlabel('North [m]'); ax.set_ylabel('East [m]'); ax.set_zlabel('Altitude [m]')
 ax.set_title('3D Trajectory'); ax.legend(fontsize=7); ax.grid(True)
 
-# --- Position North ---
+# --- Position (North / East / Altitude) ---
 ax = fig.add_subplot(3, 3, 2)
-if have_eqf:  ax.plot(eqf_t, eqf_pos[:, 0], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, ekf_pos[:, 0], 'r-', lw=1, label='EKF')
-if len(gnss_pos) > 0: ax.plot(gnss_t, gnss_pos[:, 0], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_pos) > 0:   ax.plot(fc_t,   fc_pos[:, 0],   'm:',  lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Position North [m]'); ax.set_title('Position — North')
-ax.legend(fontsize=7); ax.grid(True)
+if have_eqf:
+    ax.plot(eqf_t, eqf_pos[:, 0], 'b-',  lw=1, label='EqF N')
+    ax.plot(eqf_t, eqf_pos[:, 1], 'b--', lw=1, label='EqF E', alpha=0.7)
+    ax.plot(eqf_t, -eqf_pos[:, 2], 'b:',  lw=1, label='EqF Alt', alpha=0.5)
+if have_ekf:
+    ax.plot(ekf_t, ekf_pos[:, 0], 'r-',  lw=1, label='EKF N')
+    ax.plot(ekf_t, ekf_pos[:, 1], 'r--', lw=1, label='EKF E', alpha=0.7)
+    ax.plot(ekf_t, -ekf_pos[:, 2], 'r:',  lw=1, label='EKF Alt', alpha=0.5)
+if len(gnss_pos) > 0:
+    ax.plot(gnss_t, gnss_pos[:, 0], 'g-',  lw=1, label='GNSS N', alpha=0.5)
+    ax.plot(gnss_t, gnss_pos[:, 1], 'g--', lw=1, label='GNSS E', alpha=0.5)
+    ax.plot(gnss_t, -gnss_pos[:, 2], 'g:',  lw=1, label='GNSS Alt', alpha=0.5)
+if len(fc_pos) > 0:
+    ax.plot(fc_t, fc_pos[:, 0], 'm-',  lw=1.5, label='FC N', alpha=0.6)
+    ax.plot(fc_t, fc_pos[:, 1], 'm--', lw=1.5, label='FC E', alpha=0.6)
+    ax.plot(fc_t, -fc_pos[:, 2], 'm:',  lw=1.5, label='FC Alt', alpha=0.6)
+ax.set_ylabel('Position [m]'); ax.set_title('Position — North / East / Altitude')
+ax.legend(fontsize=6, ncol=2); ax.grid(True)
 
-# --- Position East ---
+# --- Velocity (North / East / Up) ---
 ax = fig.add_subplot(3, 3, 3)
-if have_eqf:  ax.plot(eqf_t, eqf_pos[:, 1], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, ekf_pos[:, 1], 'r-', lw=1, label='EKF')
-if len(gnss_pos) > 0: ax.plot(gnss_t, gnss_pos[:, 1], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_pos) > 0:   ax.plot(fc_t,   fc_pos[:, 1],   'm:',  lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Position East [m]'); ax.set_title('Position — East')
-ax.legend(fontsize=7); ax.grid(True)
-
-# --- Velocity North ---
-ax = fig.add_subplot(3, 3, 4)
-if have_eqf:  ax.plot(eqf_t, eqf_vel[:, 0], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, ekf_vel[:, 0], 'r-', lw=1, label='EKF')
-if len(gnss_vel) > 0: ax.plot(gnss_t, gnss_vel[:, 0], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 0], 'm:', lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Velocity North [m/s]'); ax.set_title('Velocity — North')
-ax.legend(fontsize=7); ax.grid(True)
-
-# --- Velocity East ---
-ax = fig.add_subplot(3, 3, 5)
-if have_eqf:  ax.plot(eqf_t, eqf_vel[:, 1], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, ekf_vel[:, 1], 'r-', lw=1, label='EKF')
-if len(gnss_vel) > 0: ax.plot(gnss_t, gnss_vel[:, 1], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 1], 'm:', lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Velocity East [m/s]'); ax.set_title('Velocity — East')
-ax.legend(fontsize=7); ax.grid(True)
-
-# --- Velocity Up ---
-ax = fig.add_subplot(3, 3, 6)
-if have_eqf:  ax.plot(eqf_t, -eqf_vel[:, 2], 'b-', lw=1, label='EqF')
-if have_ekf:  ax.plot(ekf_t, -ekf_vel[:, 2], 'r-', lw=1, label='EKF')
-if len(gnss_vel) > 0: ax.plot(gnss_t, -gnss_vel[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
-if len(fc_vel) > 0:   ax.plot(fc_t[:len(fc_vel)], -fc_vel[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
-ax.set_ylabel('Velocity Up [m/s]'); ax.set_title('Velocity — Up')
-ax.legend(fontsize=7); ax.grid(True)
+if have_eqf:
+    ax.plot(eqf_t, eqf_vel[:, 0], 'b-',  lw=1, label='EqF N')
+    ax.plot(eqf_t, eqf_vel[:, 1], 'b--', lw=1, label='EqF E', alpha=0.7)
+    ax.plot(eqf_t, -eqf_vel[:, 2], 'b:',  lw=1, label='EqF Up', alpha=0.5)
+if have_ekf:
+    ax.plot(ekf_t, ekf_vel[:, 0], 'r-',  lw=1, label='EKF N')
+    ax.plot(ekf_t, ekf_vel[:, 1], 'r--', lw=1, label='EKF E', alpha=0.7)
+    ax.plot(ekf_t, -ekf_vel[:, 2], 'r:',  lw=1, label='EKF Up', alpha=0.5)
+if len(gnss_vel) > 0:
+    ax.plot(gnss_t, gnss_vel[:, 0], 'g-',  lw=1, label='GNSS N', alpha=0.5)
+    ax.plot(gnss_t, gnss_vel[:, 1], 'g--', lw=1, label='GNSS E', alpha=0.5)
+    ax.plot(gnss_t, -gnss_vel[:, 2], 'g:',  lw=1, label='GNSS Up', alpha=0.5)
+if len(fc_vel) > 0:
+    ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 0], 'm-',  lw=1.5, label='FC N', alpha=0.6)
+    ax.plot(fc_t[:len(fc_vel)], fc_vel[:, 1], 'm--', lw=1.5, label='FC E', alpha=0.6)
+    ax.plot(fc_t[:len(fc_vel)], -fc_vel[:, 2], 'm:',  lw=1.5, label='FC Up', alpha=0.6)
+ax.set_ylabel('Velocity [m/s]'); ax.set_title('Velocity — North / East / Up')
+ax.legend(fontsize=6, ncol=2); ax.grid(True)
 
 # --- Attitude: Roll ---
-ax = fig.add_subplot(3, 3, 7)
+ax = fig.add_subplot(3, 3, 4)
 if have_eqf: ax.plot(eqf_t, eqf_roll, 'b-', lw=1, label='EqF')
 if have_ekf: ax.plot(ekf_t, ekf_roll, 'r-', lw=1, label='EKF')
 if len(fc_att) > 0:
     ax.plot(fc_att_t, fc_roll_deg, 'm--', lw=1, alpha=0.7, label='FC')
-ax.set_xlabel('Time [s]'); ax.set_ylabel('Roll [deg]'); ax.set_title('Attitude — Roll')
+ax.set_ylabel('Roll [deg]'); ax.set_title('Attitude — Roll')
 ax.legend(fontsize=7); ax.grid(True)
 
 # --- Attitude: Pitch ---
-ax = fig.add_subplot(3, 3, 8)
+ax = fig.add_subplot(3, 3, 5)
 if have_eqf: ax.plot(eqf_t, eqf_pitch, 'b-', lw=1, label='EqF')
 if have_ekf: ax.plot(ekf_t, ekf_pitch, 'r-', lw=1, label='EKF')
 if len(fc_att) > 0:
     ax.plot(fc_att_t, fc_pitch_deg, 'm--', lw=1, alpha=0.7, label='FC')
-ax.set_xlabel('Time [s]'); ax.set_ylabel('Pitch [deg]'); ax.set_title('Attitude — Pitch')
+ax.set_ylabel('Pitch [deg]'); ax.set_title('Attitude — Pitch')
 ax.legend(fontsize=7); ax.grid(True)
 
 # --- Attitude: Yaw ---
-ax = fig.add_subplot(3, 3, 9)
+ax = fig.add_subplot(3, 3, 6)
 if have_eqf: ax.plot(eqf_t, eqf_yaw, 'b-', lw=1, label='EqF')
 if have_ekf: ax.plot(ekf_t, ekf_yaw, 'r-', lw=1, label='EKF')
 if len(fc_att) > 0:
     ax.plot(fc_att_t, fc_yaw_deg, 'm--', lw=1, alpha=0.7, label='FC')
-ax.set_xlabel('Time [s]'); ax.set_ylabel('Yaw [deg]'); ax.set_title('Attitude — Yaw')
+ax.set_ylabel('Yaw [deg]'); ax.set_title('Attitude — Yaw')
+ax.legend(fontsize=7); ax.grid(True)
+
+# --- Position Error vs GNSS ---
+ax = fig.add_subplot(3, 3, 7)
+if have_eqf and len(gnss_pos) > 0:
+    p_i = np.column_stack([np.interp(gnss_t, eqf_t, eqf_pos[:, i]) for i in range(3)])
+    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'b-', lw=1, label='EqF')
+if have_ekf and len(gnss_pos) > 0:
+    p_i = np.column_stack([np.interp(gnss_t, ekf_t, ekf_pos[:, i]) for i in range(3)])
+    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'r-', lw=1, label='EKF')
+ax.set_xlabel('Time [s]'); ax.set_ylabel('Position Error [m]'); ax.set_title('Position Error vs GNSS')
+ax.legend(fontsize=7); ax.grid(True)
+
+# --- Speed ---
+ax = fig.add_subplot(3, 3, 8)
+if have_eqf:
+    speed = np.sqrt(np.sum(eqf_vel**2, axis=1))
+    ax.plot(eqf_t, speed, 'b-', lw=1, label='EqF')
+if have_ekf:
+    speed = np.sqrt(np.sum(ekf_vel**2, axis=1))
+    ax.plot(ekf_t, speed, 'r-', lw=1, label='EKF')
+if len(gnss_vel) > 0:
+    ax.plot(gnss_t, np.sqrt(np.sum(gnss_vel**2, axis=1)), 'g--', lw=1, label='GNSS', alpha=0.5)
+if len(fc_vel) > 0:
+    ax.plot(fc_t[:len(fc_vel)], np.sqrt(np.sum(np.array(fc_vel)**2, axis=1)), 'm:', lw=1.5, label='FC', alpha=0.6)
+ax.set_xlabel('Time [s]'); ax.set_ylabel('Speed [m/s]'); ax.set_title('Speed')
+ax.legend(fontsize=7); ax.grid(True)
+
+# --- Altitude ---
+ax = fig.add_subplot(3, 3, 9)
+if have_eqf:  ax.plot(eqf_t, -eqf_pos[:, 2], 'b-', lw=1, label='EqF')
+if have_ekf:  ax.plot(ekf_t, -ekf_pos[:, 2], 'r-', lw=1, label='EKF')
+if len(gnss_pos) > 0: ax.plot(gnss_t, -gnss_pos[:, 2], 'g--', lw=1, label='GNSS', alpha=0.5)
+if len(fc_pos) > 0:   ax.plot(fc_t, -fc_pos[:, 2], 'm:', lw=1.5, label='FC', alpha=0.6)
+ax.set_xlabel('Time [s]'); ax.set_ylabel('Altitude [m]'); ax.set_title('Altitude')
 ax.legend(fontsize=7); ax.grid(True)
 
 plt.tight_layout(rect=(0, 0, 1, 0.97))
@@ -295,10 +327,10 @@ print("="*70)
 if have_eqf:
     speed = np.sqrt(np.sum(eqf_vel**2, axis=1))
     print(f"\nEQF:")
-    print(f"  Final pos: [{eqf_pos[-1,0]:.1f}, {eqf_pos[-1,1]:.1f}, {eqf_pos[-1,2]:.1f}] m")
-    print(f"  Final vel: [{eqf_vel[-1,0]:.1f}, {eqf_vel[-1,1]:.1f}, {eqf_vel[-1,2]:.1f}] m/s")
+    print(f"  Final pos:  N={eqf_pos[-1,0]:.1f} m  E={eqf_pos[-1,1]:.1f} m  Alt={-eqf_pos[-1,2]:.1f} m")
+    print(f"  Final vel:  N={eqf_vel[-1,0]:.1f} m/s  E={eqf_vel[-1,1]:.1f} m/s  Up={-eqf_vel[-1,2]:.1f} m/s")
     print(f"  Final att (ZYX): roll={eqf_roll[-1]:.1f}°  pitch={eqf_pitch[-1]:.1f}°  yaw={eqf_yaw[-1]:.1f}°")
-    print(f"  Max speed: {np.max(speed):.1f} m/s")
+    print(f"  Max speed: {np.max(speed):.1f} m/s  Max altitude: {np.max(-eqf_pos[:,2]):.1f} m")
     if len(gnss_pos) > 0:
         p_i = np.column_stack([np.interp(gnss_t, eqf_t, eqf_pos[:, i]) for i in range(3)])
         err = np.linalg.norm(p_i - gnss_pos, axis=1)
@@ -307,10 +339,10 @@ if have_eqf:
 if have_ekf:
     speed = np.sqrt(np.sum(ekf_vel**2, axis=1))
     print(f"\nEKF:")
-    print(f"  Final pos: [{ekf_pos[-1,0]:.1f}, {ekf_pos[-1,1]:.1f}, {ekf_pos[-1,2]:.1f}] m")
-    print(f"  Final vel: [{ekf_vel[-1,0]:.1f}, {ekf_vel[-1,1]:.1f}, {ekf_vel[-1,2]:.1f}] m/s")
+    print(f"  Final pos:  N={ekf_pos[-1,0]:.1f} m  E={ekf_pos[-1,1]:.1f} m  Alt={-ekf_pos[-1,2]:.1f} m")
+    print(f"  Final vel:  N={ekf_vel[-1,0]:.1f} m/s  E={ekf_vel[-1,1]:.1f} m/s  Up={-ekf_vel[-1,2]:.1f} m/s")
     print(f"  Final att (ZYX): roll={ekf_roll[-1]:.1f}°  pitch={ekf_pitch[-1]:.1f}°  yaw={ekf_yaw[-1]:.1f}°")
-    print(f"  Max speed: {np.max(speed):.1f} m/s")
+    print(f"  Max speed: {np.max(speed):.1f} m/s  Max altitude: {np.max(-ekf_pos[:,2]):.1f} m")
     if len(gnss_pos) > 0:
         p_i = np.column_stack([np.interp(gnss_t, ekf_t, ekf_pos[:, i]) for i in range(3)])
         err = np.linalg.norm(p_i - gnss_pos, axis=1)
@@ -318,6 +350,7 @@ if have_ekf:
 
 if len(gnss_pos) > 0:
     print(f"\nGNSS ref:")
-    print(f"  Final pos: [{gnss_pos[-1,0]:.1f}, {gnss_pos[-1,1]:.1f}, {gnss_pos[-1,2]:.1f}] m")
+    print(f"  Final pos:  N={gnss_pos[-1,0]:.1f} m  E={gnss_pos[-1,1]:.1f} m  Alt={-gnss_pos[-1,2]:.1f} m")
+    print(f"  Max altitude: {np.max(-gnss_pos[:,2]):.1f} m")
 
 plt.show()

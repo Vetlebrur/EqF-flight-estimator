@@ -37,6 +37,9 @@ _C = {
     "ax": 9,       # FC accel X (g)
     "ay": 10,      # FC accel Y (g)
     "az": 11,      # FC accel Z (g)
+    "gx": 15,      # FC gyro X (deg/s raw)
+    "gy": 16,      # FC gyro Y (deg/s raw)
+    "gz": 17,      # FC gyro Z (deg/s raw)
     "pn": 36,      # FC position North (m)
     "pe": 37,      # FC position East (m)
     "pd": 38,      # FC position Down (m)
@@ -95,10 +98,12 @@ fc_pos = []
 fc_vel = []
 fc_att = []  # FC attitude (roll, pitch, yaw)
 fc_accel = []  # FC acceleration
+fc_gyro = []   # FC gyro (rad/s)
 gnss_t = []
 fc_t = []
 fc_att_t = []  # Time for attitude data
 fc_accel_t = []  # Time for acceleration data
+fc_gyro_t = []
 
 for i, row in enumerate(raw):
     t = row[_C["t"]]
@@ -147,6 +152,14 @@ for i, row in enumerate(raw):
             fc_accel.append(np.array([float(ax), float(ay), float(az)]) * 9.81)  # Convert g to m/s²
             fc_accel_t.append(t)
 
+        # FC gyro (deg/s → rad/s)
+        gx = row[_C["gx"]]
+        gy = row[_C["gy"]]
+        gz = row[_C["gz"]]
+        if np.isfinite(gx) and np.isfinite(gy) and np.isfinite(gz):
+            fc_gyro.append(np.array([float(gx), float(gy), float(gz)]) * (np.pi / 180.0))
+            fc_gyro_t.append(t)
+
         fc_t.append(t)
 
 gnss_pos = np.array(gnss_pos) if gnss_pos else np.empty((0, 3))
@@ -165,13 +178,15 @@ if len(fc_att) > 0:
 
 fc_accel = np.array(fc_accel) if fc_accel else np.empty((0, 3))
 fc_accel_t = np.array(fc_accel_t)
+fc_gyro = np.array(fc_gyro) if fc_gyro else np.empty((0, 3))
+fc_gyro_t = np.array(fc_gyro_t)
 fc_t = np.array(fc_t)
 
 # Load output data
 out = np.genfromtxt(output_csv, delimiter=",", skip_header=1)
 
-# Apply NaN filtering on core columns only (cols 0-28); mag cols 29-32 may be nan before first update
-valid_rows = np.isfinite(out[:, :29]).all(axis=1)
+# Apply NaN filtering on all core columns (t, pos, vel, DCM, biases)
+valid_rows = np.isfinite(out[:, :25]).all(axis=1)
 out = out[valid_rows]
 
 if len(out) == 0:
@@ -209,10 +224,9 @@ if invalid_count > len(R_list) * 0.1:  # More than 10% invalid
     print(f"Warning: {invalid_count}/{len(R_list)} rotation matrices are invalid (det≠1 or not orthogonal)")
     print("This suggests incorrect orthonormalization in the filter upstream")
 
-# Extract quaternion from output (columns 16-19: qw,qx,qy,qz)
-q_filter = out[:, 16:20]  # [w,x,y,z]
-filter_rot = Rotation.from_quat(q_filter[:, [1, 2, 3, 0]])  # scipy wants [x,y,z,w]
-# Convert to Euler (degrees) and unwrap to remove ±180° discontinuities
+# Extract Euler angles from DCM (columns 7-15: r00..r22)
+dcm_rows = out[:, 7:16].reshape(-1, 3, 3)
+filter_rot = Rotation.from_matrix(dcm_rows)
 filter_euler = filter_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
 yaw_arr   = np.unwrap(filter_euler[:, 0], discont=180)
 pitch_arr = np.unwrap(filter_euler[:, 1], discont=180)
@@ -334,11 +348,11 @@ ax6_accel.set_title('FC Acceleration Components')
 ax6_accel.legend(fontsize=7, ncol=2)
 ax6_accel.grid(True)
 
-# Bias estimates - Gyroscope (columns 20-22)
+# Bias estimates - Gyroscope (columns 16-18)
 ax6 = fig.add_subplot(5, 2, 7)
-bgx = out[:, 20]
-bgy = out[:, 21]
-bgz = out[:, 22]
+bgx = out[:, 16]
+bgy = out[:, 17]
+bgz = out[:, 18]
 ax6.plot(t, bgx, linewidth=1, label='Gyro X bias', alpha=0.7, color='red')
 ax6.plot(t, bgy, linewidth=1, label='Gyro Y bias', alpha=0.7, color='green')
 ax6.plot(t, bgz, linewidth=1, label='Gyro Z bias', alpha=0.7, color='blue')
@@ -348,11 +362,11 @@ ax6.set_title('Gyroscope Bias Estimates')
 ax6.legend(fontsize=8)
 ax6.grid(True)
 
-# Bias estimates - Accelerometer (columns 23-25)
+# Bias estimates - Accelerometer (columns 19-21)
 ax7 = fig.add_subplot(5, 2, 8)
-bax = out[:, 23]
-bay = out[:, 24]
-baz = out[:, 25]
+bax = out[:, 19]
+bay = out[:, 20]
+baz = out[:, 21]
 ax7.plot(t, bax, linewidth=1, label='Accel X bias', alpha=0.7, color='red')
 ax7.plot(t, bay, linewidth=1, label='Accel Y bias', alpha=0.7, color='green')
 ax7.plot(t, baz, linewidth=1, label='Accel Z bias', alpha=0.7, color='blue')
@@ -362,17 +376,26 @@ ax7.set_title('Accelerometer Bias Estimates')
 ax7.legend(fontsize=8)
 ax7.grid(True)
 
-# Magnetometer attitude snapshot (columns 29-32: mag_qw,qx,qy,qz)
+# Gyroscope components (raw FC measurements, rad/s)
+ax_gyro = fig.add_subplot(5, 2, 9)
+if len(fc_gyro) > 0:
+    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 0], 'r-', linewidth=1, label='Gyro X', alpha=0.8)
+    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 1], 'g-', linewidth=1, label='Gyro Y', alpha=0.8)
+    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 2], 'b-', linewidth=1, label='Gyro Z', alpha=0.8)
+ax_gyro.set_xlabel('Time [s]')
+ax_gyro.set_ylabel('Angular rate [rad/s]')
+ax_gyro.set_title('Gyroscope Components (FC raw)')
+ax_gyro.legend(fontsize=8)
+ax_gyro.grid(True)
+
+# Magnetometer attitude snapshot (cols 25-27: mag_roll, mag_pitch, mag_yaw)
 ax8 = fig.add_subplot(5, 2, 10)
-if out.shape[1] > 32:
-    mag_q_raw = out[:, 29:33]  # [w,x,y,z]
-    mag_valid = np.isfinite(mag_q_raw).all(axis=1)
+if out.shape[1] > 27:
+    mag_valid = np.isfinite(out[:, 25:28]).all(axis=1)
     if mag_valid.any():
-        mag_rot = Rotation.from_quat(mag_q_raw[mag_valid][:, [1, 2, 3, 0]])  # scipy [x,y,z,w]
-        mag_euler = mag_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
-        mag_roll  =  np.unwrap(mag_euler[:, 2], discont=180)
-        mag_pitch =  np.unwrap(mag_euler[:, 1], discont=180)
-        mag_yaw   =  np.unwrap(mag_euler[:, 0], discont=180)
+        mag_roll  = np.unwrap(np.degrees(out[mag_valid, 25]), discont=180)
+        mag_pitch = np.unwrap(np.degrees(out[mag_valid, 26]), discont=180)
+        mag_yaw   = np.unwrap(np.degrees(out[mag_valid, 27]), discont=180)
         ax8.plot(t[mag_valid], mag_roll,  'r-', linewidth=1.5, label='Mag Roll')
         ax8.plot(t[mag_valid], mag_pitch, 'g-', linewidth=1.5, label='Mag Pitch')
         ax8.plot(t[mag_valid], mag_yaw,   'b-', linewidth=1.5, label='Mag Yaw')

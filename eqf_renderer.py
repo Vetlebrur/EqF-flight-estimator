@@ -15,11 +15,12 @@ import numpy as np
 # Configuration
 # =============================================================================
 
-TARGET_FPS = 25
-FC_CSV = Path("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv")
+TARGET_FPS = 15
+TRAJ_INTERVAL = 6   # redraw trajectory axis every Nth frame (~2.5 fps at 15 fps)
+FC_CSV = Path("data/20241011_NIMBUS24_Flight_FC_Data.csv")
 
 # Default to combined data (static + flight)
-DEFAULT_EQF_CSV = Path("outputs/tg_eqf_output_30s.csv")
+DEFAULT_EQF_CSV = Path("outputs/tg_eqf_output_full.csv")
 
 # FC CSV column indices
 _FC_T = 0
@@ -67,14 +68,15 @@ def R_to_euler(R):
 
 
 def build_wire():
-    """Wire-frame rocket segments."""
-    th = np.linspace(0, 2 * np.pi, 17)
+    """Wire-frame rocket segments (reduced resolution for speed)."""
+    th = np.linspace(0, 2 * np.pi, 9)   # 9 pts/ring instead of 17
     r = 0.3
     segs = []
 
-    for z in np.linspace(-2.0, 1.5, 5):
-        segs.append(np.array([r * np.cos(th), r * np.sin(th), np.full(17, z)]))
-    for i in range(0, 16, 4):
+    # 3 body rings instead of 5
+    for z in np.linspace(-2.0, 1.5, 3):
+        segs.append(np.array([r * np.cos(th), r * np.sin(th), np.full(9, z)]))
+    for i in range(0, 8, 2):
         segs.append(
             np.array(
                 [
@@ -85,8 +87,8 @@ def build_wire():
             )
         )
 
-    segs.append(np.array([r * np.cos(th), r * np.sin(th), np.full(17, 1.5)]))
-    for i in range(0, 16, 4):
+    segs.append(np.array([r * np.cos(th), r * np.sin(th), np.full(9, 1.5)]))
+    for i in range(0, 8, 2):
         segs.append(
             np.array(
                 [
@@ -110,26 +112,25 @@ def build_wire():
     return segs
 
 
+_N_BODY = 7   # 3 rings + 4 stringers
+_N_NOSE = 5   # 1 ring + 4 lines
+_N_FINS = 4
+
+
 def _add_wire_lines(ax, body_color, nose_color, fin_color):
     """Create Line3D objects for one rocket."""
     lines = []
-    for _ in range(9):
+    for _ in range(_N_BODY):
         (l,) = ax.plot([], [], [], color=body_color, linewidth=1)
         lines.append(l)
-    for _ in range(9, 14):
+    for _ in range(_N_NOSE):
         (l,) = ax.plot([], [], [], color=nose_color, linewidth=1)
         lines.append(l)
-    for _ in range(14, 18):
+    for _ in range(_N_FINS):
         (l,) = ax.plot([], [], [], color=fin_color, linewidth=1)
         lines.append(l)
     return lines
 
-
-def _update_wire(lines, segs, R):
-    """Update wire frame positions for given rotation."""
-    for i, seg in enumerate(segs):
-        rotated = R @ seg
-        lines[i].set_data_3d(rotated[0], rotated[1], rotated[2])
 
 
 def _setup_3d_ax(ax, title):
@@ -170,20 +171,24 @@ def load_eqf_csv(path: Path) -> list[dict]:
             if "t" in row and "time(s)" not in row:
                 row["time(s)"] = row["t"]
 
-            # Euler angles already in CSV (roll, pitch, yaw in radians, unwrapped)
-            # Rename columns to match expected format
-            if "roll" in row:
-                row["roll(rad)"] = row["roll"]
+            # Extract Euler angles from the DCM columns (r00..r22) that
+            # the filter always writes.  "roll"/"pitch"/"yaw" columns do not
+            # exist in the output CSV, so the old fallback to 0.0 was wrong.
+            dcm_keys = ("r00","r01","r02","r10","r11","r12","r20","r21","r22")
+            if all(k in row for k in dcm_keys):
+                R = np.array([
+                    [row["r00"], row["r01"], row["r02"]],
+                    [row["r10"], row["r11"], row["r12"]],
+                    [row["r20"], row["r21"], row["r22"]],
+                ])
+                yaw_v, pitch_v, roll_v = R_to_euler(R)
+                row["roll(rad)"]  = roll_v
+                row["pitch(rad)"] = pitch_v
+                row["yaw(rad)"]   = yaw_v
             else:
-                row["roll(rad)"] = 0.0
-            if "pitch" in row:
-                row["pitch(rad)"] = row["pitch"]
-            else:
+                row["roll(rad)"]  = 0.0
                 row["pitch(rad)"] = 0.0
-            if "yaw" in row:
-                row["yaw(rad)"] = row["yaw"]
-            else:
-                row["yaw(rad)"] = 0.0
+                row["yaw(rad)"]   = 0.0
 
             row.setdefault("std_pn(m)", 0.0)
 
@@ -277,27 +282,64 @@ def select_render_indices(rows, target_fps):
 
 def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> None:
     """Animate EqF filter output with FC attitude comparison and 3D trajectory (ENU frame)."""
-    # Load NED data
-    pn_eqf = [r["pn(m)"] for r in rows]
-    pe_eqf = [r["pe(m)"] for r in rows]
-    pd_eqf = [r["pd(m)"] for r in rows]
+    # Load NED data as numpy arrays
+    pn_eqf = np.array([r["pn(m)"] for r in rows])
+    pe_eqf = np.array([r["pe(m)"] for r in rows])
+    pu_eqf = np.array([-r["pd(m)"] for r in rows])  # Up = -Down
 
     pn_fc, pe_fc, pd_fc = load_fc_trajectory(fc_path)
+    pu_fc = -pd_fc
 
     gps_n, gps_e, gps_d = load_gps_trajectory(fc_path)
-
-    # Convert from NED to ENU: negate down (z) to get up
-    pu_eqf = np.array([-d for d in pd_eqf])  # Up = -Down
-    pu_fc = np.array([-d for d in pd_fc])
-    gps_u = np.array([-d for d in gps_d])
+    gps_u = -gps_d
 
     render_indices = select_render_indices(rows, TARGET_FPS)
     render_rows = [rows[i] for i in render_indices]
+    render_indices_arr = np.asarray(render_indices)
 
     fc_t, fc_roll, fc_pitch, fc_yaw, _, _ = load_fc_attitude(fc_path)
 
     segs = build_wire()
 
+    # ------------------------------------------------------------------
+    # Pre-compute everything that would otherwise run per frame
+    # ------------------------------------------------------------------
+    render_times = np.array([r["time(s)"] for r in render_rows])
+    fc_indices = np.searchsorted(fc_t, render_times, side="left").clip(0, len(fc_t) - 1)
+
+    print(f"Pre-computing {len(render_rows)} frame rotations …", flush=True)
+    eqf_segs_rot = [
+        [attitude_matrix(r["yaw(rad)"], r["pitch(rad)"], r["roll(rad)"]) @ seg for seg in segs]
+        for r in render_rows
+    ]
+    fc_segs_rot = [
+        [attitude_matrix(fc_yaw[i], fc_pitch[i], fc_roll[i]) @ seg for seg in segs]
+        for i in fc_indices
+    ]
+
+    eqf_telem = [
+        (
+            f"t     = {r['time(s)']:.2f} s\n"
+            f"pitch = {math.degrees(r['pitch(rad)']):+.1f}°\n"
+            f"yaw   = {math.degrees(r['yaw(rad)']):+.1f}°\n"
+            f"roll  = {math.degrees(r['roll(rad)']):+.1f}°\n"
+            f"alt   = {-r['pd(m)']:+.1f} m"
+        )
+        for r in render_rows
+    ]
+    fc_telem = [
+        (
+            f"pitch = {math.degrees(fc_pitch[i]):+.1f}°\n"
+            f"yaw   = {math.degrees(fc_yaw[i]):+.1f}°\n"
+            f"roll  = {math.degrees(fc_roll[i]):+.1f}°"
+        )
+        for i in fc_indices
+    ]
+    print("Done. Starting animation.", flush=True)
+
+    # ------------------------------------------------------------------
+    # Build figure
+    # ------------------------------------------------------------------
     fig = plt.figure(figsize=(16, 8))
     gs = gridspec.GridSpec(2, 2, figure=fig, width_ratios=[1, 1])
 
@@ -323,33 +365,35 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
     (pos_fc,) = ax_traj.plot([], [], [], "s", color="darkorange", markersize=8)
     ax_traj.legend(fontsize=8)
 
-    telem_eqf = ax_eqf.text2D(0.02, 0.97, "", transform=ax_eqf.transAxes,
-                              fontsize=7, verticalalignment="top", family="monospace")
-    telem_fc = ax_fc.text2D(0.02, 0.97, "", transform=ax_fc.transAxes,
-                            fontsize=7, verticalalignment="top", family="monospace")
+    telem_eqf_txt = ax_eqf.text2D(0.02, 0.97, "", transform=ax_eqf.transAxes,
+                                  fontsize=7, verticalalignment="top", family="monospace")
+    telem_fc_txt = ax_fc.text2D(0.02, 0.97, "", transform=ax_fc.transAxes,
+                                fontsize=7, verticalalignment="top", family="monospace")
 
-    # Auto-scale trajectory axes based on all trajectory bounds (ENU)
-    all_n = list(pn_eqf) + list(pn_fc) + list(gps_n[~np.isnan(gps_n)])
-    all_e = list(pe_eqf) + list(pe_fc) + list(gps_e[~np.isnan(gps_e)])
-    all_u = list(pu_eqf) + list(pu_fc) + list(gps_u[~np.isnan(gps_u)])
-
-    pn_min, pn_max = min(all_n), max(all_n)
-    pe_min, pe_max = min(all_e), max(all_e)
-    pu_min, pu_max = min(all_u), max(all_u)
+    # Auto-scale trajectory axes (ENU)
+    all_n = np.concatenate([pn_eqf, pn_fc, gps_n[~np.isnan(gps_n)]])
+    all_e = np.concatenate([pe_eqf, pe_fc, gps_e[~np.isnan(gps_e)]])
+    all_u = np.concatenate([pu_eqf, pu_fc, gps_u[~np.isnan(gps_u)]])
     margin = 100
-    ax_traj.set_xlim(pe_min - margin, pe_max + margin)
-    ax_traj.set_ylim(pn_min - margin, pn_max + margin)
-    ax_traj.set_zlim(pu_min - margin, pu_max + margin)
+    ax_traj.set_xlim(all_e.min() - margin, all_e.max() + margin)
+    ax_traj.set_ylim(all_n.min() - margin, all_n.max() + margin)
+    ax_traj.set_zlim(all_u.min() - margin, all_u.max() + margin)
 
     fig.tight_layout()
     plt.ion()
     plt.show(block=False)
+    fig.canvas.draw()   # full draw once to prime the renderer
+    fig.canvas.flush_events()
+
+    # Grab the renderer after the initial draw so we can draw axes individually.
+    renderer = getattr(fig.canvas, "renderer", None) or getattr(fig.canvas, "get_renderer", lambda: None)()
+    use_partial_draw = renderer is not None
 
     prev_wall = time.perf_counter()
-    prev_t = render_rows[0]["time(s)"]
+    prev_t = render_times[0]
 
-    for frame_idx, row in enumerate(render_rows):
-        t = row["time(s)"]
+    for frame_idx in range(len(render_rows)):
+        t = render_times[frame_idx]
 
         if realtime:
             sim_dt = t - prev_t
@@ -360,42 +404,41 @@ def animate(rows: list[dict], fc_path: Path = FC_CSV, realtime: bool = True) -> 
             prev_wall = time.perf_counter()
             prev_t = t
 
-        yaw, pitch, roll = row["yaw(rad)"], row["pitch(rad)"], row["roll(rad)"]
-        _update_wire(lines_eqf, segs, attitude_matrix(yaw, pitch, roll))
-        # ENU altitude: negate down to get up
-        altitude_up = -row['pd(m)']
-        telem_eqf.set_text(
-            f"t     = {t:.2f} s\n"
-            f"pitch = {math.degrees(pitch):+.1f}°\n"
-            f"yaw   = {math.degrees(yaw):+.1f}°\n"
-            f"roll  = {math.degrees(roll):+.1f}°\n"
-            f"alt   = {altitude_up:+.1f} m"
-        )
+        # Update EqF rocket (pre-computed segments)
+        for i, seg in enumerate(eqf_segs_rot[frame_idx]):
+            lines_eqf[i].set_data_3d(seg[0], seg[1], seg[2])
+        telem_eqf_txt.set_text(eqf_telem[frame_idx])
 
-        fc_idx = int(np.searchsorted(fc_t, t, side="left"))
-        fc_idx = min(fc_idx, len(fc_t) - 1)
-        fc_p, fc_y, fc_r = fc_pitch[fc_idx], fc_yaw[fc_idx], fc_roll[fc_idx]
-        _update_wire(lines_fc, segs, attitude_matrix(fc_y, fc_p, fc_r))
-        telem_fc.set_text(
-            f"pitch = {math.degrees(fc_p):+.1f}°\n"
-            f"yaw   = {math.degrees(fc_y):+.1f}°\n"
-            f"roll  = {math.degrees(fc_r):+.1f}°"
-        )
+        # Update FC rocket (pre-computed segments)
+        for i, seg in enumerate(fc_segs_rot[frame_idx]):
+            lines_fc[i].set_data_3d(seg[0], seg[1], seg[2])
+        telem_fc_txt.set_text(fc_telem[frame_idx])
 
-        # Update trajectory plot (ENU coordinates)
-        row_idx = render_indices[frame_idx]
-        traj_eqf.set_data(pe_eqf[:row_idx + 1], pn_eqf[:row_idx + 1])
-        traj_eqf.set_3d_properties(pu_eqf[:row_idx + 1])
-        traj_fc.set_data(pe_fc[:row_idx + 1], pn_fc[:row_idx + 1])
-        traj_fc.set_3d_properties(pu_fc[:row_idx + 1])
-        traj_gps.set_data(gps_e[:row_idx + 1], gps_n[:row_idx + 1])
-        traj_gps.set_3d_properties(gps_u[:row_idx + 1])
-        pos_eqf.set_data([pe_eqf[row_idx]], [pn_eqf[row_idx]])
-        pos_eqf.set_3d_properties([pu_eqf[row_idx]])
-        pos_fc.set_data([pe_fc[row_idx]], [pn_fc[row_idx]])
-        pos_fc.set_3d_properties([pu_fc[row_idx]])
+        # Update trajectory artists only every TRAJ_INTERVAL frames
+        update_traj = (frame_idx % TRAJ_INTERVAL == 0)
+        if update_traj:
+            row_idx = render_indices_arr[frame_idx]
+            traj_eqf.set_data(pe_eqf[:row_idx + 1], pn_eqf[:row_idx + 1])
+            traj_eqf.set_3d_properties(pu_eqf[:row_idx + 1])  # type: ignore[attr-defined]
+            traj_fc.set_data(pe_fc[:row_idx + 1], pn_fc[:row_idx + 1])
+            traj_fc.set_3d_properties(pu_fc[:row_idx + 1])  # type: ignore[attr-defined]
+            traj_gps.set_data(gps_e[:row_idx + 1], gps_n[:row_idx + 1])
+            traj_gps.set_3d_properties(gps_u[:row_idx + 1])  # type: ignore[attr-defined]
+            pos_eqf.set_data([pe_eqf[row_idx]], [pn_eqf[row_idx]])
+            pos_eqf.set_3d_properties([pu_eqf[row_idx]])  # type: ignore[attr-defined]
+            pos_fc.set_data([pe_fc[row_idx]], [pn_fc[row_idx]])
+            pos_fc.set_3d_properties([pu_fc[row_idx]])  # type: ignore[attr-defined]
 
-        plt.pause(0.001)
+        if use_partial_draw:
+            ax_eqf.draw(renderer)
+            ax_fc.draw(renderer)
+            if update_traj:
+                ax_traj.draw(renderer)
+            fig.canvas.blit(fig.bbox)
+            fig.canvas.flush_events()
+        else:
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
 
     plt.ioff()
     plt.show()
