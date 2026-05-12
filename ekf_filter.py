@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as ScipyRot
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 0.3
+GNSS_UPDATE_FREQ_HZ = 0.1
 
 # =============================================================================
 # Constants

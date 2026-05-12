@@ -71,17 +71,27 @@ def load_filter_output(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
     """Load a filter output CSV (EqF or EKF format).
 
     Returns (t, pos, vel, q_wxyz, bias_gyro) or None if file missing.
-    Both filters share: t=0, pos=1:4, vel=4:7, R=7:16, q=16:20, bgxyz=20:23.
+    Both filters share cols 0-15 (t, pos, vel, DCM). Quaternion is always
+    derived from the DCM so both formats work regardless of whether qw/qx/qy/qz
+    columns are present. Gyro bias column offset is detected from the header.
     """
     try:
+        with open(path) as f:
+            header = [c.strip() for c in f.readline().split(",")]
+        has_quat = "qw" in header
+        bg_start = 20 if has_quat else 16
+
         out = np.genfromtxt(path, delimiter=",", skip_header=1)
         if out.ndim == 1:
             out = out.reshape(1, -1)
-        t    = out[:, 0]
-        pos  = out[:, 1:4]
-        vel  = out[:, 4:7]
-        q    = out[:, 16:20]   # [w,x,y,z]
-        bg   = out[:, 20:23]   # gyro bias
+        t   = out[:, 0]
+        pos = out[:, 1:4]
+        vel = out[:, 4:7]
+        # Derive quaternion from DCM (cols 7:16) — avoids gimbal lock, works for both formats
+        dcm = out[:, 7:16].reshape(-1, 3, 3)
+        q_xyzw = Rotation.from_matrix(dcm).as_quat()   # scipy [x,y,z,w]
+        q = q_xyzw[:, [3, 0, 1, 2]]                    # → [w,x,y,z]
+        bg  = out[:, bg_start:bg_start + 3]
         return t, pos, vel, q, bg
     except Exception as e:
         print(f"Could not load {path}: {e}")
@@ -280,10 +290,10 @@ ax.legend(fontsize=7); ax.grid(True)
 ax = fig.add_subplot(3, 3, 7)
 if have_eqf and len(gnss_pos) > 0:
     p_i = np.column_stack([np.interp(gnss_t, eqf_t, eqf_pos[:, i]) for i in range(3)])
-    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'b-', lw=1, label='EqF')
+    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'b-', lw=1, alpha=0.6, label='EqF')
 if have_ekf and len(gnss_pos) > 0:
     p_i = np.column_stack([np.interp(gnss_t, ekf_t, ekf_pos[:, i]) for i in range(3)])
-    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'r-', lw=1, label='EKF')
+    ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'r-', lw=1, alpha=0.6, label='EKF')
 ax.set_xlabel('Time [s]'); ax.set_ylabel('Position Error [m]'); ax.set_title('Position Error vs GNSS')
 ax.legend(fontsize=7); ax.grid(True)
 

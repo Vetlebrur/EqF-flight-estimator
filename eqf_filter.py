@@ -27,6 +27,10 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 DATASET = "full"
 
 GNSS_UPDATE_FREQ_HZ = 0.1   # GNSS update frequency (Hz) — update every 1/f seconds
+
+# --- Update toggles ---
+USE_GNSS_UPDATE = True
+USE_MAG_UPDATE  = False
 # =============================================================================
 # Constants and Physical Parameters
 # =============================================================================
@@ -255,9 +259,8 @@ class TGEqF:
         # Attitude snapshot (roll, pitch, yaw) at last magnetometer update — nan until first
         self.mag_euler: np.ndarray = np.full(3, float('nan'))
 
-        # Filter diagnostics: ANIS and ANEES
+        # Filter diagnostics: normalised ANIS per update (target ~1.0)
         self.anis_values: list[float] = []
-        self.anees_values: list[float] = []
         self.update_times: list[tuple[str, float, float]] = []
 
         # =====================================================================
@@ -368,7 +371,7 @@ class TGEqF:
 
 
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
-        """Yaw-only magnetometer update — body-Z projection of SO(3) innovation."""
+        """Pitch-only magnetometer update — body-Y projection of SO(3) innovation."""
         mag = np.asarray(mag, dtype=float).reshape(3)
         mag_n = np.linalg.norm(mag)
         if mag_n < 1e-6:
@@ -379,28 +382,28 @@ class TGEqF:
         y_hat = R_hat.T @ MAG_FIELD_NED.flatten()
         y_hat /= np.linalg.norm(y_hat) + 1e-12
 
-        # Full SO(3) innovation then project onto body-Z (yaw only)
+        # Full SO(3) innovation then project onto body-Y (pitch only)
         delta_3d = SO3.log(SO3(from_two_vectors_rotation(y_hat, mag))).flatten()
-        delta_yaw = float(delta_3d[2])
+        delta_pitch = float(delta_3d[1])
 
-        if abs(delta_yaw) < 0.01:
+        if abs(delta_pitch) < 0.01:
             return
 
-        # 1×18 C: body-Z row of the 3×18 attitude Jacobian
-        body_z = np.array([0., 0., 1.])
-        C_yaw = (body_z @ self.calculate_C_mag()).reshape(1, 18)
+        # 1×18 C: body-Y row of the 3×18 attitude Jacobian
+        body_y = np.array([0., 1., 0.])
+        C_pitch = (body_y @ self.calculate_C_mag()).reshape(1, 18)
 
-        R_var = np.array([[self.R_mag[0, 0]]])   # 1×1
-        S = C_yaw @ self.Sigma @ C_yaw.T + R_var  # 1×1
-        K = self.Sigma @ C_yaw.T @ np.linalg.inv(S)  # 18×1
+        R_var = np.array([[self.R_mag[0, 0]]])    # 1×1
+        S = C_pitch @ self.Sigma @ C_pitch.T + R_var  # 1×1
+        K = self.Sigma @ C_pitch.T @ np.linalg.inv(S)  # 18×1
 
         if t is not None:
-            self.update_times.append(("mag", t, float(delta_yaw**2 / S[0, 0])))
+            self.update_times.append(("mag", t, float(delta_pitch**2 / S[0, 0])))
 
-        Delta = self.innovationLift @ (K * delta_yaw)  # 18×1
+        Delta = self.innovationLift @ (K * delta_pitch)  # 18×1
         self.X_hat = SymGroup.exp(Delta) * self.X_hat
 
-        IKC = np.eye(18) - K @ C_yaw
+        IKC = np.eye(18) - K @ C_pitch
         self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ R_var @ K.T)
 
         euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
@@ -424,28 +427,16 @@ class TGEqF:
         K = self.Sigma @ C.T @ Sinv
         Delta = K @ delta_u
 
-        # Compute ANIS for filter diagnostics
-        anis = self.compute_anis(delta_u, S)
-        if t is not None and anis is not None:
-            self.update_times.append(('gnss', t, anis))
+        # Compute normalised ANIS (divide by measurement dim so target is ~1)
+        anis_raw = self.compute_anis(delta_u, S)
+        if t is not None and anis_raw is not None:
+            self.update_times.append(('gnss', t, anis_raw / delta_u.size))
 
         self.X_hat = SymGroup.exp(Delta) * self.X_hat  # type: ignore[attr-defined]
         I = np.eye(18)
         IKC = I - K @ C
         self.Sigma = IKC @ self.Sigma @ IKC.T + K @ self.R_gnss @ K.T  # Joseph form
         self.Sigma = sym(self.Sigma)
-
-        # Compute ANEES using GNSS as ground truth (position and velocity only)
-        # State error = [pos_est - pos_meas, vel_est - vel_meas]
-        state_error = delta.reshape(-1, 1)  # Use innovation as state error estimate
-        # Extract 6x6 covariance block for position (6:9) and velocity (3:6)
-        P_pos_vel = np.block([
-            [self.Sigma[6:9, 6:9], self.Sigma[6:9, 3:6]],
-            [self.Sigma[3:6, 6:9], self.Sigma[3:6, 3:6]]
-        ])
-        anees = self.compute_anees(state_error, P_pos_vel)
-        if t is not None and anees is not None:
-            self.update_times.append(('gnss_anees', t, anees))
 
         # Track when last GNSS update occurred
         if t is not None:
@@ -469,23 +460,6 @@ class TGEqF:
             anis = float(np.squeeze(anis_mat))
             self.anis_values.append(anis)
             return anis
-        except (np.linalg.LinAlgError, ValueError):
-            return None
-
-    def compute_anees(self, state_error: Any, P: Any) -> float | None:
-        """Compute Average Normalized Estimation Error Squared.
-
-        ANEES = error^T * P^{-1} * error
-        Should be close to state dimension (~18 for full state)
-        """
-        try:
-            err: np.ndarray = np.asarray(state_error, dtype=float)
-            p: np.ndarray = np.asarray(P, dtype=float)
-            P_inv: np.ndarray = np.linalg.inv(p)
-            anees_mat: np.ndarray = err.T @ P_inv @ err
-            anees = float(np.squeeze(anees_mat))
-            self.anees_values.append(anees)
-            return anees
         except (np.linalg.LinAlgError, ValueError):
             return None
 
@@ -620,10 +594,12 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         mag_axis_order: np.ndarray | None = None,
         mag_axis_signs: np.ndarray | None = None,
         r_mag_var: float | None = None,
+        gnss_freq_hz: float | None = None,
         silent: bool = False) -> dict[str, float]:
     """Run filter on NIMBUS24 FC CSV data. Returns RMSE dict (keys: roll, pitch, yaw, deg)."""
     axis_order = MAG_AXIS_ORDER if mag_axis_order is None else mag_axis_order
     axis_signs = MAG_AXIS_SIGNS if mag_axis_signs is None else mag_axis_signs
+    _gnss_freq = GNSS_UPDATE_FREQ_HZ if gnss_freq_hz is None else gnss_freq_hz
 
     # Select data source based on configuration
     if csv_in is None:
@@ -712,9 +688,9 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
 
         # Magnetometer update
         _DEBUG_WINDOW = 75.0 <= t <= 85.0
-        if filt.attitude_initialized and (prev_mag is None or not np.allclose(prev_mag, mag)):
+        if USE_MAG_UPDATE and filt.attitude_initialized and (prev_mag is None or not np.allclose(prev_mag, mag)):
             _b_before = filt.xi_hat().b[3:6].flatten().copy() if _DEBUG_WINDOW else None
-            #filt.magnetometer_update(mag, t=t)
+            filt.magnetometer_update(mag, t=t)
             prev_mag = mag
             if _DEBUG_WINDOW:
                 _b_after = filt.xi_hat().b[3:6].flatten()
@@ -722,14 +698,13 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
 
         lat = row[_C["lat"]]
         lon = row[_C["lon"]]
-        if lat != 0 and lon != 0:
-            # Apply GNSS update at configured frequency, regardless of position change
-            gnss_update_period = 1.0 / GNSS_UPDATE_FREQ_HZ
+        if USE_GNSS_UPDATE and lat != 0 and lon != 0:
+            # Apply GNSS update at configured frequency
+            gnss_update_period = 1.0 / _gnss_freq
             time_since_last_gnss = gnss_update_period if filt.t_last_gnss is None else (t - filt.t_last_gnss)
             rate_ok = filt.t_last_gnss is None or time_since_last_gnss >= gnss_update_period
 
             if rate_ok:
-                # Apply GNSS update
                 alt = row[_C["alt"]] / 1000.0
                 pos_NED = _gps_to_ned(lat, lon, alt, lat0, lon0, alt0)
                 vel_NED = np.array([row[_C["gps_vn"]], row[_C["gps_ve"]], row[_C["gps_vd"]]]) / 1000.0
@@ -772,41 +747,18 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         "mag_roll,mag_pitch,mag_yaw"
     )
 
+    np.savetxt(csv_out, out, delimiter=",", header=header, comments="")
     if not silent:
-        np.savetxt(csv_out, out, delimiter=",", header=header, comments="")
         print(f"Wrote {len(out)} rows to {csv_out}")
         print(f"Magnetometer updates applied: {filt.mag_update_count}")
 
-    # Save diagnostic data (ANIS/ANEES values with timestamps)
+    # Save diagnostic data (normalised ANIS per update, target ~1.0)
     if filt.update_times:
         diag_out = csv_out.replace("tg_eqf_output", "tg_eqf_diagnostics")
         with open(diag_out, 'w') as f:
             f.write("time,update_type,anis,anees\n")
-            anis_dict: dict[tuple[str, float], float] = {}
-            anees_dict: dict[tuple[str, float], float] = {}
-            # Organize by (update_type, time) to combine anis and anees
-            for update_type, ts, value in filt.update_times:
-                key = (update_type.split('_')[0], ts)
-                if 'anees' in update_type:
-                    anees_dict[key] = value
-                else:
-                    anis_dict[key] = value
-
-            # Merge and write
-            all_times: dict[tuple[str, float], dict[str, float | None]] = {}
-            for key, val in anis_dict.items():
-                if key not in all_times:
-                    all_times[key] = {'anis': None, 'anees': None}
-                all_times[key]['anis'] = val
-            for key, val in anees_dict.items():
-                if key not in all_times:
-                    all_times[key] = {'anis': None, 'anees': None}
-                all_times[key]['anees'] = val
-
-            for (update_type, ts), values in sorted(all_times.items()):
-                anis_str = f"{values['anis']:.4f}" if values['anis'] is not None else ""
-                anees_str = f"{values['anees']:.4f}" if values['anees'] is not None else ""
-                f.write(f"{ts:.4f},{update_type},{anis_str},{anees_str}\n")
+            for update_type, ts, anis_val in sorted(filt.update_times, key=lambda x: x[1]):
+                f.write(f"{ts:.4f},{update_type},{anis_val:.4f},\n")
         if not silent:
             print(f"Wrote diagnostic data to {diag_out}")
 
@@ -840,14 +792,7 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
                 type_anis[mtype].append(anis_val)
             for mtype, vals in sorted(type_anis.items()):
                 arr = np.array(vals)
-                print(f"ANIS [{mtype}]: mean={np.mean(arr):.2f}  max={np.max(arr):.2f}  n={len(arr)}")
-
-        if filt.anees_values:
-            anees_array = np.array(filt.anees_values)
-            print(f"ANEES (avg normalized estimation error squared):")
-            print(f"  Mean: {np.mean(anees_array):.2f} (should be ~1 for measurement dimension)")
-            print(f"  Std:  {np.std(anees_array):.2f}")
-            print(f"  Min:  {np.min(anees_array):.2f}, Max: {np.max(anees_array):.2f}")
+                print(f"ANIS [{mtype}]: mean={np.mean(arr):.2f}  max={np.max(arr):.2f}  n={len(arr)}  (target ~1.0)")
 
     return rmse
 
