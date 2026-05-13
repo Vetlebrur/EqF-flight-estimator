@@ -1,6 +1,7 @@
 """Extended Kalman Filter for rocket trajectory and attitude estimation using IMU and GNSS."""
 
 import os
+import time
 from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRot
@@ -430,6 +431,9 @@ def run(csv_in: str | None = None, csv_out: str | None = None) -> None:
 
     prev_mag = None
 
+    _prop_total = 0.0
+    _prop_count = 0
+
     for i, row in enumerate(raw):
         t = row[_C["t"]]
         if not np.isfinite(t):
@@ -441,7 +445,10 @@ def run(csv_in: str | None = None, csv_out: str | None = None) -> None:
         if not np.all(np.isfinite(np.concatenate([gyro, accel]))):
             continue
 
+        _t0 = time.perf_counter()
         filt.predict(t, accel, gyro)
+        _prop_total += time.perf_counter() - _t0
+        _prop_count += 1
 
         # Magnetometer update
         mag_raw = row[[_C["mx"], _C["my"], _C["mz"]]]
@@ -481,6 +488,9 @@ def run(csv_in: str | None = None, csv_out: str | None = None) -> None:
     )
     np.savetxt(csv_out, out_arr, delimiter=",", header=header, comments="")
     print(f"Wrote {len(out_arr)} rows to {csv_out}")
+    if _prop_count > 0:
+        avg_us = _prop_total / _prop_count * 1e6
+        print(f"Propagate: {_prop_count} steps, avg {avg_us:.1f} µs/step  (total {_prop_total*1e3:.1f} ms)")
 
 
 if __name__ == "__main__":

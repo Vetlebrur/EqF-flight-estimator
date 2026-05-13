@@ -170,12 +170,6 @@ fc_vel = np.array(fc_vel) if fc_vel else np.empty((0, 3))
 fc_att = np.array(fc_att) if fc_att else np.empty((0, 3))
 fc_att_t = np.array(fc_att_t)
 
-# Unwrap FC attitude to match filter representation
-if len(fc_att) > 0:
-    fc_att[:, 0] = np.unwrap(fc_att[:, 0], discont=np.pi)
-    fc_att[:, 1] = np.unwrap(fc_att[:, 1], discont=np.pi)
-    fc_att[:, 2] = np.unwrap(fc_att[:, 2], discont=np.pi)
-
 fc_accel = np.array(fc_accel) if fc_accel else np.empty((0, 3))
 fc_accel_t = np.array(fc_accel_t)
 fc_gyro = np.array(fc_gyro) if fc_gyro else np.empty((0, 3))
@@ -228,9 +222,9 @@ if invalid_count > len(R_list) * 0.1:  # More than 10% invalid
 dcm_rows = out[:, 7:16].reshape(-1, 3, 3)
 filter_rot = Rotation.from_matrix(dcm_rows)
 filter_euler = filter_rot.as_euler('ZYX', degrees=True)  # [yaw, pitch, roll]
-yaw_arr   = np.unwrap(filter_euler[:, 0], discont=180)
-pitch_arr = np.unwrap(filter_euler[:, 1], discont=180)
-roll_arr  = np.unwrap(filter_euler[:, 2], discont=180)
+yaw_arr   = filter_euler[:, 0]
+pitch_arr = filter_euler[:, 1]
+roll_arr  = filter_euler[:, 2]
 
 # Load diagnostic data if available
 diag_csv = output_csv.replace("tg_eqf_output", "tg_eqf_diagnostics")
@@ -393,9 +387,9 @@ ax8 = fig.add_subplot(5, 2, 10)
 if out.shape[1] > 27:
     mag_valid = np.isfinite(out[:, 25:28]).all(axis=1)
     if mag_valid.any():
-        mag_roll  = np.unwrap(np.degrees(out[mag_valid, 25]), discont=180)
-        mag_pitch = np.unwrap(np.degrees(out[mag_valid, 26]), discont=180)
-        mag_yaw   = np.unwrap(np.degrees(out[mag_valid, 27]), discont=180)
+        mag_roll  = np.degrees(out[mag_valid, 25])
+        mag_pitch = np.degrees(out[mag_valid, 26])
+        mag_yaw   = np.degrees(out[mag_valid, 27])
         ax8.plot(t[mag_valid], mag_roll,  'r-', linewidth=1.5, label='Mag Roll')
         ax8.plot(t[mag_valid], mag_pitch, 'g-', linewidth=1.5, label='Mag Pitch')
         ax8.plot(t[mag_valid], mag_yaw,   'b-', linewidth=1.5, label='Mag Yaw')

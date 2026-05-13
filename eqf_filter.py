@@ -2,11 +2,12 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.linalg import expm, cho_factor, cho_solve
+from scipy.linalg import expm
 from scipy.spatial.transform import Rotation as ScipyRot
 from pylie import SO3, SE23
 
@@ -15,7 +16,7 @@ sys.path.insert(0, str(ref_path))
 utils_path = ref_path / "Utils"
 sys.path.insert(0, str(utils_path))
 from matrix_math import *
-from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, stateActionDiff, grp_adj
+from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, stateActionDiff
 
 # =============================================================================
 # Configuration
@@ -53,7 +54,7 @@ P_0_blocks = [
 ]
 
 # --- Process Noise (Q) ---
-Q_rot_var = 1e-2               # [0:3] rotation process noise
+Q_rot_var = 1e-3               # [0:3] rotation process noise
 Q_vel_var = 1e-1                # [3:6] velocity process noise
 Q_pos_var = 1e-2                # [6:9] position process noise
 Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk (very tight)
@@ -340,7 +341,7 @@ class TGEqF:
         U.mu = xi_hat.b[6:9, 0:1]
         U.tau = np.zeros((9, 1))
 
-        lift = calculate_lift(self.xi_hat(), U)
+        lift = calculate_lift(xi_hat, U)
 
         self.X_hat = self.X_hat * SymGroup.exp(lift * dt)  # type: ignore[attr-defined]
 
@@ -348,13 +349,11 @@ class TGEqF:
         Phi = expm(A * dt)
         self.Sigma = Phi @ self.Sigma @ Phi.T + self.Q * dt
         self.Sigma = sym(self.Sigma)
-        
 
-        # Prevent covariance explosion by bounding maximum eigenvalue
-        # If any eigenvalue exceeds threshold, clip it
-        eigs, V = np.linalg.eigh(self.Sigma)
-        max_eig_threshold = 1e8  # Cap maximum uncertainty
-        if np.max(eigs) > max_eig_threshold:
+        # Only decompose when diagonal hints at overflow (avoids per-step eigh)
+        max_eig_threshold = 1e8
+        if np.max(np.diag(self.Sigma)) > max_eig_threshold:
+            eigs, V = np.linalg.eigh(self.Sigma)
             eigs_clipped = np.clip(eigs, 0, max_eig_threshold)
             self.Sigma = V @ np.diag(eigs_clipped) @ V.T
             self.Sigma = sym(self.Sigma)
@@ -657,6 +656,9 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
             filt.initialize_attitude_triad(_mag / _mag_n)
             break
 
+    _prop_total = 0.0
+    _prop_count = 0
+
     for i, row in enumerate(raw):
         t = row[_C["t"]]
         if not np.isfinite(t):
@@ -670,7 +672,10 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         if not np.all(np.isfinite(np.concatenate([gyro, accel]))):
             continue
 
+        _t0 = time.perf_counter()
         filt.propagate(t, gyro, accel)
+        _prop_total += time.perf_counter() - _t0
+        _prop_count += 1
 
         # Extract magnetometer data
         mag_raw = row[[_C["mx"], _C["my"], _C["mz"]]]
@@ -779,6 +784,10 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         dot = np.clip(np.abs(np.sum(q_filt * q_fc, axis=1)), 0.0, 1.0)
         ang_err_deg = np.degrees(2.0 * np.arccos(dot))
         rmse = {"angular": float(np.sqrt(np.mean(ang_err_deg**2)))}
+
+    if _prop_count > 0:
+        avg_us = _prop_total / _prop_count * 1e6
+        print(f"Propagate: {_prop_count} steps, avg {avg_us:.1f} µs/step  (total {_prop_total*1e3:.1f} ms)")
 
     if not silent:
         print(f"\n=== Attitude RMSE vs FC ===")
