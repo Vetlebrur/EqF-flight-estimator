@@ -1,4 +1,4 @@
-"""Standalone CNS TG-EqF inspired inertial/GNSS filter using pylie."""
+"""TG-EqF inertial/GNSS filter on SE₂(3) using pylie."""
 
 import os
 import sys
@@ -28,6 +28,7 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 DATASET = "full"
 
 GNSS_UPDATE_FREQ_HZ = 0.1   # GNSS update frequency (Hz) — update every 1/f seconds
+MAG_UPDATE_FREQ_HZ  = 1.0   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
 USE_GNSS_UPDATE       = True
@@ -70,8 +71,10 @@ Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
 R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
 R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
-# Magnetometer noise: innovation is SO3.log(R_err) in radians.
-R_mag_var = 100.0  # rad²
+# Magnetometer noise: innovation is (mag - ŷ), dimensionless unit-vector difference.
+# Unit-vector innovations are bounded by [-2, 2]; typical calibrated noise ~0.05 units.
+# Set large (0.5) initially — tune down once axis mapping is verified.
+R_mag_var = 0.5  # dimensionless²
 
 # =============================================================================
 # Magnetometer configuration
@@ -103,28 +106,6 @@ MAG_FIELD_NED = _mag_raw / np.linalg.norm(_mag_raw)
 # Helpers
 # =============================================================================
 
-
-def from_two_vectors_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Shortest-arc rotation matrix mapping unit vector a to unit vector b.
-    """
-    a = a.flatten() / (np.linalg.norm(a) + 1e-12)
-    b = b.flatten() / (np.linalg.norm(b) + 1e-12)
-    cross = np.cross(a, b)
-    cross_n = np.linalg.norm(cross)
-    dot = float(np.clip(np.dot(a, b), -1.0, 1.0))
-    if cross_n < 1e-8:
-        if dot > 0:
-            return np.eye(3)
-        perp = np.array([1., 0., 0.]) if abs(a[0]) < 0.9 else np.array([0., 1., 0.])
-        ax = np.cross(a, perp)
-        ax /= np.linalg.norm(ax)
-        return -np.eye(3) + 2 * np.outer(ax, ax)
-    axis = cross / cross_n
-    angle = np.arctan2(cross_n, dot)
-    K = SO3.wedge(axis.reshape(-1, 1))  # (3,3) skew-symmetric
-    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-
-
 def col(x: Any) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     return x.reshape(-1, 1)
@@ -151,25 +132,13 @@ def blockdiag(*arrs: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 def calculate_lift(xi: State, U: InputSpace) -> np.ndarray:
-    """Compute continuous lift (tangent-space dynamics)."""
-    L = np.zeros((18, 1))
-
-    # Decompose the lift computation
+    Lambda = np.zeros((18, 1))
     U_minus_b = U.as_W_vec() - xi.b
     T_inv_mat = xi.T.inv().as_matrix()
-    f10_val = f_10(xi.T.as_matrix())
-
-    # Create gravity term with attitude-dependent compensation
-    gravity_term = G + f10_val
-    # Modify gravity to account for the rotation-dependent mu feedback
-    # by reducing its effect when mu is being fed back
-    T_inv_grav = T_inv_mat @ gravity_term
-    grav_vee = SE23.vee(T_inv_grav)
-
-    L[0:9, 0:1] = U_minus_b + grav_vee
-    L[9:18, 0:1] = SE23.adjoint(xi.b) @ L[0:9, 0:1] - U.tau
-
-    return L
+    grav_vee = SE23.vee(T_inv_mat @ (G + f_10(xi.T.as_matrix())))
+    Lambda[0:9, 0:1] = U_minus_b + grav_vee
+    Lambda[9:18, 0:1] = SE23.adjoint(xi.b) @ Lambda[0:9, 0:1] - U.tau
+    return Lambda
 
 # =============================================================================
 # Filter
@@ -180,19 +149,11 @@ class TGEqF:
     """TG-EqF Inertial/GNSS Filter."""
 
     def initialize_attitude_triad(self, mag_body: np.ndarray) -> None:
-        """Initialize attitude via TRIAD using averaged accel (gravity) + magnetometer.
-
-        TRIAD constructs an orthonormal rotation matrix from two vector observations
-        (gravity and magnetic field) in both the body frame and the NED reference frame.
-        No Euler angles need to be specified — works for any initial orientation.
-        """
         MIN_INIT_SAMPLES = 5
         if self.attitude_initialized or self._init_accel_n < MIN_INIT_SAMPLES:
             return
 
         accel_avg = self._init_accel_accum / self._init_accel_n
-
-        # Gravity direction in body = opposite of specific force (accel reads -gravity)
         g_body = -accel_avg
         g_norm = np.linalg.norm(g_body)
         if g_norm < 1.0:  # sanity check: at least 1 m/s² average
@@ -201,14 +162,9 @@ class TGEqF:
 
         m_body = mag_body / (np.linalg.norm(mag_body) + 1e-10)
 
-        # Reference vectors in NED
-        g_ned = np.array([0.0, 0.0, 1.0])   # gravity points down (+NED-Z)
+        g_ned = np.array([0.0, 0.0, 1.0])
         m_ned = MAG_FIELD_NED.flatten()
 
-        # TRIAD: build orthonormal triad in body frame and NED frame
-        # First basis vector: gravity
-        # Second: perpendicular to both gravity and mag (cross product)
-        # Third: completes the right-handed frame
         cross_b = np.cross(g_body, m_body)
         cross_n = np.cross(g_ned, m_ned)
         cn = np.linalg.norm(cross_n)
@@ -235,7 +191,6 @@ class TGEqF:
               f"roll={roll:.1f}°  pitch={pitch:.1f}°  yaw={yaw:.1f}°")
 
     def __init__(self):
-        """Initialize filter state and covariance matrices."""
         self.X_hat = SymGroup.identity()
         self.xi_0 = State()
         self.t_prev = None
@@ -243,54 +198,30 @@ class TGEqF:
         self.t_last_imu = None
         self.innovationLift = np.linalg.pinv(stateActionDiff(self.xi_0))
         self.attitude_initialized = False
-
-        # Accel accumulator for TRIAD initialization (averaged over static samples)
         self._init_accel_accum = np.zeros(3)
         self._init_accel_n = 0
 
-        # Moving average filter for smoothing noisy sensor measurements
-        self.ma_window = 10 
+        self.ma_window = 10
         self.gyro_buffer = []
         self.accel_buffer = []
 
-        # Magnetometer values
-        self.mag_meas_0 = MAG_FIELD_NED.reshape(-1, 1)  # WMM field in NED
-
-        self.mag_update_count = 0  # Track magnetometer update calls
-        self.update_count = 0  # Counter for periodic re-orthonormalization
-
-        # Attitude snapshot (roll, pitch, yaw) at last magnetometer update — nan until first
+        self.mag_meas_0 = MAG_FIELD_NED.reshape(-1, 1)
+        self.mag_update_count = 0
         self.mag_euler: np.ndarray = np.full(3, float('nan'))
 
-        # Filter diagnostics: normalised ANIS per update (target ~1.0)
         self.anis_values: list[float] = []
         self.update_times: list[tuple[str, float, float]] = []
 
-        # =====================================================================
-        # Assemble noise covariance matrices from parameters
-        # =====================================================================
-        # State covariance (P) 
         self.Sigma = blockdiag(*P_0_blocks)
-
-        # Measurement noise covariance (R)
-        self.R_gnss = blockdiag(
-            np.eye(3) * R_gnss_pos_var,    # Position variance [0:3, 0:3]
-            np.eye(3) * R_gnss_vel_var     # Velocity variance [3:6, 3:6]
-        )
-    
-        self.R_mag = blockdiag(
-            np.eye(3) * R_mag_var
-        )
-
-        # Process noise covariance (Q)
-        # 18x18 block diagonal with different noise levels for each state component
+        self.R_gnss = blockdiag(np.eye(3) * R_gnss_pos_var, np.eye(3) * R_gnss_vel_var)
+        self.R_mag  = np.eye(3) * R_mag_var
         self.Q = blockdiag(
-            np.eye(3) * Q_rot_var,           # [0:3, 0:3] rotation process noise
-            np.eye(3) * Q_vel_var,           # [3:6, 3:6] velocity process noise
-            np.eye(3) * Q_pos_var,           # [6:9, 6:9] position process noise
-            np.eye(3) * Q_gyro_bias_var,     # [9:12, 9:12] gyro bias random walk
-            np.eye(3) * Q_accel_bias_var,    # [12:15, 12:15] accel bias random walk
-            np.eye(3) * Q_virtual_bias_var   # [15:18, 15:18] virtual accel bias
+            np.eye(3) * Q_rot_var,
+            np.eye(3) * Q_vel_var,
+            np.eye(3) * Q_pos_var,
+            np.eye(3) * Q_gyro_bias_var,
+            np.eye(3) * Q_accel_bias_var,
+            np.eye(3) * Q_virtual_bias_var,
         )
 
     def xi_hat(self) -> State:
@@ -311,7 +242,6 @@ class TGEqF:
     # =========================================================================
 
     def propagate(self, t: float, gyro: np.ndarray, accel: np.ndarray) -> None:
-        """Propagate state using gyro and accel measurements."""
         gyro = col(gyro)
         accel = col(accel)
 
@@ -319,7 +249,6 @@ class TGEqF:
             self.t_prev = t
             return
 
-        # Accumulate accel samples for TRIAD initialization; skip propagation until ready
         if not self.attitude_initialized:
             self._init_accel_accum += accel.flatten()
             self._init_accel_n += 1
@@ -368,15 +297,7 @@ class TGEqF:
     # Update functions
     # =========================================================================
 
-    from scipy.linalg import cho_factor, cho_solve
-
-
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
-        """Full 3-axis magnetometer update. C = [-ŷ∧ŷ∧, 0, ...].
-        Innovation: δ = log( SO3(mag) · R_hat⁻¹ )
-        where SO3(mag) = from_two_vectors_rotation(mag, m_ref) maps the body-frame
-        measurement to the NED reference, giving zero innovation when R_hat is correct.
-        """
         mag = np.asarray(mag, dtype=float).reshape(3)
         mag_n = np.linalg.norm(mag)
         if mag_n < 1e-6:
@@ -385,65 +306,57 @@ class TGEqF:
 
         xi_hat = self.xi_hat()
         R_hat  = xi_hat.T.R().as_matrix()
-        y_hat  = (R_hat.T @ MAG_FIELD_NED.flatten())
-        y_hat /= np.linalg.norm(y_hat) + 1e-12   # predicted measurement (body frame)
+        y_hat  = R_hat.T @ MAG_FIELD_NED.flatten()
+        y_hat /= np.linalg.norm(y_hat) + 1e-12
 
-        # SO(3) log innovation: δ = log( SO3(mag) · R_hat⁻¹ )
-        R_obs  = from_two_vectors_rotation(mag, MAG_FIELD_NED.flatten())  # SO3(mag)
-        R_err  = R_obs @ R_hat.T                                          # · R_hat⁻¹
-        delta  = SO3.log(SO3(R_err)).reshape(3, 1)
+        delta = (mag - y_hat).reshape(3, 1)
 
-        C = self.calculate_C_mag()                # 3×18
-        S = C @ self.Sigma @ C.T + self.R_mag     # 3×3
-        K = self.Sigma @ C.T @ np.linalg.inv(S)  # 18×3
+        C = self.calculate_C_mag(y_hat)
+        S = C @ self.Sigma @ C.T + self.R_mag
+        K = self.Sigma @ C.T @ np.linalg.inv(S)
+
+        # Only correct attitude rows — prevents bias/position corruption via off-diagonal Σ.
+        K_att = np.zeros_like(K)
+        K_att[0:3, :] = K[0:3, :]
 
         if t is not None:
             anis_raw = float(np.squeeze(delta.T @ np.linalg.inv(S) @ delta))
             self.update_times.append(("mag", t, anis_raw / 3.0))
 
-        Delta = self.innovationLift @ (K @ delta)  # 18×1
+        Delta = self.innovationLift @ (K_att @ delta)
         self.X_hat = SymGroup.exp(Delta) * self.X_hat
 
-        IKC = np.eye(18) - K @ C
-        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ self.R_mag @ K.T)
-        self._reset(Delta)
+        IKC = np.eye(18) - K_att @ C
+        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K_att @ self.R_mag @ K_att.T)
+        if USE_RESET:
+            self._reset(Delta)
 
         euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
         self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])
         self.mag_update_count += 1
 
     def GNSS_update(self, pos_NED: np.ndarray, vel_NED: np.ndarray, t: float | None = None) -> None:
-        """Correct position and velocity estimates using GNSS measurements."""
-        # Get current estimates from composed state
         xi_hat = self.xi_hat()
         pos_est = xi_hat.T.w().as_vector().flatten()
         vel_est = xi_hat.T.x().as_vector().flatten()
 
-        # Combine position and velocity innovations (6 measurements)
-        delta = np.hstack([pos_NED - pos_est, vel_NED - vel_est])
-        delta_u = delta.reshape(-1, 1)
+        delta_u = np.hstack([pos_NED - pos_est, vel_NED - vel_est]).reshape(-1, 1)
 
         C = self.calculate_C_gnss()
         S = C @ self.Sigma @ C.T + self.R_gnss
-        Sinv = np.linalg.inv(S)
-        K = self.Sigma @ C.T @ Sinv
+        K = self.Sigma @ C.T @ np.linalg.inv(S)
         Delta = K @ delta_u
 
-        # Compute normalised ANIS (divide by measurement dim so target is ~1)
         anis_raw = self.compute_anis(delta_u, S)
         if t is not None and anis_raw is not None:
             self.update_times.append(('gnss', t, anis_raw / delta_u.size))
 
         self.X_hat = SymGroup.exp(Delta) * self.X_hat  # type: ignore[attr-defined]
-        I = np.eye(18)
-        IKC = I - K @ C
-        self.Sigma = IKC @ self.Sigma @ IKC.T + K @ self.R_gnss @ K.T  # Joseph form
-        self.Sigma = sym(self.Sigma)
+        IKC = np.eye(18) - K @ C
+        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ self.R_gnss @ K.T)
 
         if USE_RESET:
             self._reset(Delta)
-
-        # Track when last GNSS update occurred
         if t is not None:
             self.t_last_gnss = t
 
@@ -452,11 +365,6 @@ class TGEqF:
     # =========================================================================
 
     def compute_anis(self, innovation: Any, S: Any) -> float | None:
-        """Compute Average Normalized Innovation Squared.
-
-        ANIS = innovation^T * S^{-1} * innovation
-        Should be close to measurement dimension (~3 for 3D measurements)
-        """
         try:
             inn: np.ndarray = np.asarray(innovation, dtype=float)
             s: np.ndarray = np.asarray(S, dtype=float)
@@ -491,35 +399,17 @@ class TGEqF:
         R = xi_hat.T.R().as_matrix()
         v = col(xi_hat.T.x().as_vector())
         p = col(xi_hat.T.w().as_vector())
-        b = xi_hat.b  # 9-vector: [b_gyro(3); b_accel(3); b_mu(3)]
+        b = xi_hat.b
 
         return [
             t,
-            p[0, 0],
-            p[1, 0],
-            p[2, 0],
-            v[0, 0],
-            v[1, 0],
-            v[2, 0],
-            R[0, 0],
-            R[0, 1],
-            R[0, 2],
-            R[1, 0],
-            R[1, 1],
-            R[1, 2],
-            R[2, 0],
-            R[2, 1],
-            R[2, 2],
-            b[0, 0] if b.shape[0] > 0 else 0.0,  # Gyro X bias
-            b[1, 0] if b.shape[0] > 1 else 0.0,  # Gyro Y bias
-            b[2, 0] if b.shape[0] > 2 else 0.0,  # Gyro Z bias
-            b[3, 0] if b.shape[0] > 3 else 0.0,  # Accel X bias
-            b[4, 0] if b.shape[0] > 4 else 0.0,  # Accel Y bias
-            b[5, 0] if b.shape[0] > 5 else 0.0,  # Accel Z bias
-            b[6, 0] if b.shape[0] > 6 else 0.0,  # Virtual bias X (b_mu)
-            b[7, 0] if b.shape[0] > 7 else 0.0,  # Virtual bias Y
-            b[8, 0] if b.shape[0] > 8 else 0.0,  # Virtual bias Z
-            *self.mag_euler.tolist(),               # roll, pitch, yaw at last mag update
+            p[0, 0], p[1, 0], p[2, 0],
+            v[0, 0], v[1, 0], v[2, 0],
+            R[0, 0], R[0, 1], R[0, 2],
+            R[1, 0], R[1, 1], R[1, 2],
+            R[2, 0], R[2, 1], R[2, 2],
+            *(b[i, 0] if b.shape[0] > i else 0.0 for i in range(9)),
+            *self.mag_euler.tolist(),
         ]
     
     # =============================================================================
@@ -528,14 +418,15 @@ class TGEqF:
 
     def calculate_A(self, u: InputSpace) -> np.ndarray:
         u_0 = velocityAction(self.X_hat.inv(), u)
-        At = np.zeros((18, 18))
-        At[0:9, 0:9] = np.block([
+        _2A =  np.block([
             [np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 3))],
             [SO3.wedge(col((0,0,g))), np.zeros((3, 3)), np.zeros((3,3))],
             [np.zeros((3, 3)), np.eye(3), np.zeros((3, 3))]
         ])
         w_vec = u_0.as_W_vec()
         g_vec = SE23.vee(G)
+        At = np.zeros((18, 18))
+        At[0:9, 0:9] = _2A
         At[9:18, 9:18] = SE23.adjoint(w_vec + g_vec)
         At[0:9, 9:18] = np.eye(9)
 
@@ -543,25 +434,17 @@ class TGEqF:
 
     def calculate_C_mag(self, y_hat: np.ndarray) -> np.ndarray:
         Ct = np.zeros((3, 18))
-        y_wedge = SO3.wedge(y_hat)
+        y_wedge = SO3.wedge(y_hat.reshape(3, 1))
         Ct[0:3, 0:3] = -(y_wedge @ y_wedge)   # = I - y_hat @ y_hat.T
         return Ct
 
     def calculate_C_gnss(self) -> np.ndarray:
-        # 6x18 C matrix for position and velocity measurements
         Ct = np.zeros((6, 18))
-
-        # Get composed state for measurement Jacobian
         xi_hat = self.xi_hat()
-
-        # Position measurement: C_p = [-wedge(p), 0, I3, 0, 0, 0]
         Ct[0:3, 0:3] = -SO3.wedge(xi_hat.T.w().as_vector())
         Ct[0:3, 6:9] = np.eye(3)
-
-        # Velocity measurement: C_v = [-wedge(v), I3, 0, 0, 0, 0]
         Ct[3:6, 0:3] = -SO3.wedge(xi_hat.T.x().as_vector())
         Ct[3:6, 3:6] = np.eye(3)
-
         return Ct
     
 # =============================================================================
@@ -609,11 +492,15 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         mag_axis_signs: np.ndarray | None = None,
         r_mag_var: float | None = None,
         gnss_freq_hz: float | None = None,
+        mag_freq_hz: float | None = None,
+        use_mag_update: bool | None = None,
         silent: bool = False) -> dict[str, float]:
     """Run filter on NIMBUS24 FC CSV data. Returns RMSE dict (keys: roll, pitch, yaw, deg)."""
     axis_order = MAG_AXIS_ORDER if mag_axis_order is None else mag_axis_order
     axis_signs = MAG_AXIS_SIGNS if mag_axis_signs is None else mag_axis_signs
     _gnss_freq = GNSS_UPDATE_FREQ_HZ if gnss_freq_hz is None else gnss_freq_hz
+    _mag_freq  = MAG_UPDATE_FREQ_HZ  if mag_freq_hz  is None else mag_freq_hz
+    _use_mag   = USE_MAG_UPDATE if use_mag_update is None else use_mag_update
 
     # Select data source based on configuration
     if csv_in is None:
@@ -648,14 +535,12 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
     out = []
     fc_att_list: list[list[float]] = []
     prev_mag = None
+    t_last_mag = None
     gnss_count = 0
     last_progress_t = 0
 
-    # ICM_20608 gyro scale factor: raw ADC counts to rad/s
-    gyro_scale_factor =  (np.pi / 180.0) #* (2000.0 / 32768.0)
+    gyro_scale_factor = np.pi / 180.0
 
-    # Pre-initialize attitude via TRIAD before the main loop, so the filter
-    # propagates from t=0 with the correct initial orientation.
     MIN_PRE_INIT = 5
     for _row in raw:
         if not np.isfinite(_row[_C["t"]]):
@@ -680,10 +565,8 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         if not np.isfinite(t):
             continue
 
-        # Sensor→body frame: ax→X, ay→Y, az→Z (matches FC body frame, TRIAD gives pitch≈84.5°)
         gyro  = row[[_C["gx"], _C["gy"], _C["gz"]]] * gyro_scale_factor
         accel = row[[_C["ax"], _C["ay"], _C["az"]]] * g
-
 
         if not np.all(np.isfinite(np.concatenate([gyro, accel]))):
             continue
@@ -693,67 +576,38 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         _prop_total += time.perf_counter() - _t0
         _prop_count += 1
 
-        # Extract magnetometer data
         mag_raw = row[[_C["mx"], _C["my"], _C["mz"]]]
-
-        # Remap sensor axes to body frame
         mag = mag_raw[axis_order] * axis_signs
-
-        # Normalize to unit length
         mag_norm = np.linalg.norm(mag)
-        if mag_norm > 1e-6:  # Avoid division by zero
+        if mag_norm > 1e-6:
             mag = mag / mag_norm
-        # TRIAD initialization: trigger on first valid mag reading before filter starts
         if not filt.attitude_initialized:
             filt.initialize_attitude_triad(mag)
 
-        # Magnetometer update
-        _DEBUG_WINDOW = 75.0 <= t <= 85.0
-        if USE_MAG_UPDATE and filt.attitude_initialized and (prev_mag is None or not np.allclose(prev_mag, mag)):
-            _b_before = filt.xi_hat().b[3:6].flatten().copy() if _DEBUG_WINDOW else None
+        _mag_rate_ok = t_last_mag is None or (t - t_last_mag) >= 1.0 / _mag_freq
+        if _use_mag and filt.attitude_initialized and _mag_rate_ok and (prev_mag is None or not np.allclose(prev_mag, mag)):
             filt.magnetometer_update(mag, t=t)
             prev_mag = mag
-            if _DEBUG_WINDOW:
-                _b_after = filt.xi_hat().b[3:6].flatten()
-                print(f"[DBG t={t:.2f}] MAG update  | ba_before={_b_before}  ba_after={_b_after}  delta={_b_after - _b_before}")
+            t_last_mag = t
 
         lat = row[_C["lat"]]
         lon = row[_C["lon"]]
         if USE_GNSS_UPDATE and lat != 0 and lon != 0:
-            # Apply GNSS update at configured frequency
             gnss_update_period = 1.0 / _gnss_freq
-            time_since_last_gnss = gnss_update_period if filt.t_last_gnss is None else (t - filt.t_last_gnss)
-            rate_ok = filt.t_last_gnss is None or time_since_last_gnss >= gnss_update_period
-
+            rate_ok = filt.t_last_gnss is None or (t - filt.t_last_gnss) >= gnss_update_period
             if rate_ok:
                 alt = row[_C["alt"]] / 1000.0
                 pos_NED = _gps_to_ned(lat, lon, alt, lat0, lon0, alt0)
                 vel_NED = np.array([row[_C["gps_vn"]], row[_C["gps_ve"]], row[_C["gps_vd"]]]) / 1000.0
-                if _DEBUG_WINDOW:
-                    _b_before = filt.xi_hat().b[3:6].flatten().copy()
-                    _pos_est = filt.xi_hat().T.w().as_vector().flatten()
-                    _vel_est = filt.xi_hat().T.x().as_vector().flatten()
-                    print(f"[DBG t={t:.2f}] GNSS update | pos_inn={pos_NED - _pos_est}  vel_inn={vel_NED - _vel_est}")
                 filt.GNSS_update(pos_NED, vel_NED, t)
                 gnss_count += 1
-                if _DEBUG_WINDOW:
-                    _b_after = filt.xi_hat().b[3:6].flatten()
-                    print(f"[DBG t={t:.2f}]              | ba_before={_b_before}  ba_after={_b_after}  delta={_b_after - _b_before}")
-
 
         out.append(filt.output_row(t))
-        fc_att_list.append([
-            float(row[_C["roll_fc"]]),
-            float(row[_C["pitch_fc"]]),
-            float(row[_C["yaw_fc"]]),
-        ])
+        fc_att_list.append([float(row[_C["roll_fc"]]), float(row[_C["pitch_fc"]]), float(row[_C["yaw_fc"]])])
 
-        # Progress reporting with covariance diagnostics
-        if not silent and t - last_progress_t >= 30:  # Every 30 seconds
+        if not silent and t - last_progress_t >= 30:
             progress = 100.0 * i / len(raw)
             print(f"[PROGRESS] {progress:.1f}% | t={t:.2f}s | rows={i}/{len(raw)} | GNSS_updates={gnss_count}")
-
-            # Pretty-print covariance (diagonal standard deviations)
             sigmas = np.sqrt(np.diag(filt.Sigma))
             print(f"  Covariance (std dev):  Att:{sigmas[0:3].mean():.2f}rad  Vel:{sigmas[3:6].mean():.2f}m/s  "
                   f"Pos:{sigmas[6:9].mean():.1f}m  GyBias:{sigmas[9:12].mean():.4f}rad/s  "
