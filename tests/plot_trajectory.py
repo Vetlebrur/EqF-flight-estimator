@@ -22,6 +22,8 @@ def safe_normalize(vec: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
 DATASET = "full"
 
+USE_MA_FILTER = False  # Whether to load the moving average filtered output (if available)
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -63,9 +65,9 @@ def gps_to_ned(lat: float, lon: float, alt: float, lat0: float, lon0: float, alt
 
 # Load CSV data based on configuration
 _datasets = {
-    "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",        "outputs/tg_eqf_output_full.csv",     "FULL FLIGHT"),
-    "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",     "outputs/tg_eqf_output_30s.csv",      "FLIGHT (first 30s)"),
-    "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv", "outputs/tg_eqf_output_1s_loop.csv",  "FLIGHT (1s loop)"),
+    "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",        f"outputs/tg_eqf_output_full{'_ma' if USE_MA_FILTER else ''}.csv",     "FULL FLIGHT"),
+    "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",     f"outputs/tg_eqf_output_30s{'_ma' if USE_MA_FILTER else ''}.csv",      "FLIGHT (first 30s)"),
+    "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv", f"outputs/tg_eqf_output_1s_loop{'_ma' if USE_MA_FILTER else ''}.csv",  "FLIGHT (1s loop)"),
 }
 if DATASET not in _datasets:
     raise ValueError(f"Unknown DATASET {DATASET!r}. Choose from: {list(_datasets)}")
@@ -237,12 +239,12 @@ try:
 except Exception as e:
     print(f"Could not load diagnostic data: {e}")
 
-# Create main trajectory figure (5 rows for trajectory, biases, etc.)
-fig = plt.figure(figsize=(16, 20))
+# Create main trajectory figure (3 rows x 2 cols)
+fig = plt.figure(figsize=(16, 12))
 
 # 3D trajectory
-ax1 = fig.add_subplot(5, 2, 1, projection='3d')
-ax1.plot(px, py, -pz, 'b-', linewidth=1, label='Filter Estimate')
+ax1 = fig.add_subplot(3, 2, 1, projection='3d')
+ax1.plot(px, py, -pz, 'b-', linewidth=1, label='TG-EqF')
 if len(gnss_pos) > 0:
     ax1.plot(gnss_pos[:, 0], gnss_pos[:, 1], -gnss_pos[:, 2], 'r--', linewidth=1, label='GNSS')
 if len(fc_pos) > 0:
@@ -263,10 +265,10 @@ ax1.legend(fontsize=8)
 ax1.grid(True)
 
 # Position components vs time
-ax2 = fig.add_subplot(5, 2, 2)
-ax2.plot(t, px, 'b-', label='Filter North', linewidth=1)
-ax2.plot(t, py, 'b-', label='Filter East', linewidth=1, alpha=0.7)
-ax2.plot(t, -pz, 'b-', label='Filter Alt', linewidth=1, alpha=0.5)
+ax2 = fig.add_subplot(3, 2, 2)
+ax2.plot(t, px, 'b-', label='TG-EqF North', linewidth=1)
+ax2.plot(t, py, 'b-', label='TG-EqF East', linewidth=1, alpha=0.7)
+ax2.plot(t, -pz, 'b-', label='TG-EqF Alt', linewidth=1, alpha=0.5)
 if len(gnss_pos) > 0:
     ax2.plot(gnss_t, gnss_pos[:, 0], 'r--', label='GNSS North', linewidth=1)
     ax2.plot(gnss_t, gnss_pos[:, 1], 'r--', label='GNSS East', linewidth=1, alpha=0.7)
@@ -275,17 +277,16 @@ if len(fc_pos) > 0:
     ax2.plot(fc_t, fc_pos[:, 0], 'g:', label='FC North', linewidth=1.5)
     ax2.plot(fc_t, fc_pos[:, 1], 'g:', label='FC East', linewidth=1.5, alpha=0.7)
     ax2.plot(fc_t, -fc_pos[:, 2], 'g:', label='FC Alt', linewidth=1.5, alpha=0.5)
-ax2.set_xlabel('Time [s]')
 ax2.set_ylabel('Position [m]')
 ax2.set_title('Position Components vs Time')
 ax2.legend(fontsize=7, ncol=2)
 ax2.grid(True)
 
 # Velocity components vs time
-ax3 = fig.add_subplot(5, 2, 3)
-ax3.plot(t, vx, 'b-', label='Filter North', linewidth=1)
-ax3.plot(t, vy, 'b-', label='Filter East', linewidth=1, alpha=0.7)
-ax3.plot(t, -vz, 'b-', label='Filter Up', linewidth=1, alpha=0.5)
+ax3 = fig.add_subplot(3, 2, 3)
+ax3.plot(t, vx, 'b-', label='TG-EqF North', linewidth=1)
+ax3.plot(t, vy, 'b-', label='TG-EqF East', linewidth=1, alpha=0.7)
+ax3.plot(t, -vz, 'b-', label='TG-EqF Up', linewidth=1, alpha=0.5)
 if len(gnss_vel) > 0:
     ax3.plot(gnss_t, gnss_vel[:, 0], 'r--', label='GNSS North', linewidth=1)
     ax3.plot(gnss_t, gnss_vel[:, 1], 'r--', label='GNSS East', linewidth=1, alpha=0.7)
@@ -294,7 +295,6 @@ if len(fc_vel) > 0:
     ax3.plot(fc_t, fc_vel[:, 0], 'g:', label='FC North', linewidth=1.5)
     ax3.plot(fc_t, fc_vel[:, 1], 'g:', label='FC East', linewidth=1.5, alpha=0.7)
     ax3.plot(fc_t, -fc_vel[:, 2], 'g:', label='FC Up', linewidth=1.5, alpha=0.5)
-ax3.set_xlabel('Time [s]')
 ax3.set_ylabel('Velocity [m/s]')
 ax3.set_title('Velocity Components vs Time')
 ax3.legend(fontsize=7, ncol=2)
@@ -302,109 +302,44 @@ ax3.grid(True)
 
 # Speed vs time
 speed = np.sqrt(vx**2 + vy**2 + vz**2)
-ax4 = fig.add_subplot(5, 2, 4)
-ax4.plot(t, speed, 'r-', linewidth=1, label='Filter Speed')
+ax4 = fig.add_subplot(3, 2, 4)
+ax4.plot(t, speed, 'r-', linewidth=1, label='TG-EqF Speed')
 if len(fc_vel) > 0:
 	fc_speed = np.sqrt(fc_vel[:, 0]**2 + fc_vel[:, 1]**2 + fc_vel[:, 2]**2)
 	ax4.plot(fc_t, fc_speed, 'g--', linewidth=1, alpha=0.7, label='FC Speed')
-ax4.set_xlabel('Time [s]')
 ax4.set_ylabel('Speed [m/s]')
 ax4.set_title('Total Speed vs Time')
 ax4.legend(fontsize=8)
 ax4.grid(True)
 
-# Attitude - Angular error (quaternion-based, no gimbal lock)
-ax5 = fig.add_subplot(5, 2, 6)
-ax5.plot(t, roll_arr, 'r-', linewidth=1, label='Filter Roll (ZYX)')
-ax5.plot(t, pitch_arr, 'g-', linewidth=1, label='Filter Pitch (ZYX)')
-ax5.plot(t, yaw_arr, 'b-', linewidth=1, label='Filter Yaw (ZYX)')
+# Roll & Yaw (unwrapped)
+roll_unwrap = np.unwrap(roll_arr, period=360)
+yaw_unwrap  = np.unwrap(yaw_arr,  period=360)
+
+ax5 = fig.add_subplot(3, 2, 5)
+ax5.plot(t, roll_unwrap, 'r-', linewidth=1, label='TG-EqF Roll')
+ax5.plot(t, yaw_unwrap,  'b-', linewidth=1, label='TG-EqF Yaw')
 if len(fc_att) > 0:
-    ax5.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.7, label='FC Roll')
-    ax5.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.7, label='FC Pitch')
-    ax5.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.7, label='FC Yaw')
+    fc_roll_unwrap = np.degrees(np.unwrap(fc_att[:, 0], period=2*np.pi))
+    fc_yaw_unwrap  = np.degrees(np.unwrap(fc_att[:, 2], period=2*np.pi))
+    ax5.plot(fc_att_t, fc_roll_unwrap, 'r--', linewidth=1, alpha=0.7, label='FC Roll')
+    ax5.plot(fc_att_t, fc_yaw_unwrap,  'b--', linewidth=1, alpha=0.7, label='FC Yaw')
 ax5.set_xlabel('Time [s]')
 ax5.set_ylabel('Angle [deg]')
-ax5.set_title('Attitude - Filter vs FC (quaternion-derived)')
+ax5.set_title('Roll & Yaw — TG-EqF vs FC')
 ax5.legend(fontsize=7, ncol=2)
 ax5.grid(True)
 
-# Acceleration components vs time
-ax6_accel = fig.add_subplot(5, 2, 5)
-# Note: Filter doesn't output acceleration directly, so we can't compare
-# But we can show FC acceleration for reference
-if len(fc_accel) > 0:
-	ax6_accel.plot(fc_accel_t, fc_accel[:, 0], 'r-', label='FC Accel X', linewidth=1)
-	ax6_accel.plot(fc_accel_t, fc_accel[:, 1], 'g-', label='FC Accel Y', linewidth=1, alpha=0.7)
-	ax6_accel.plot(fc_accel_t, fc_accel[:, 2], 'b-', label='FC Accel Z', linewidth=1, alpha=0.5)
-ax6_accel.set_xlabel('Time [s]')
-ax6_accel.set_ylabel('Acceleration [m/s²]')
-ax6_accel.set_title('FC Acceleration Components')
-ax6_accel.legend(fontsize=7, ncol=2)
-ax6_accel.grid(True)
-
-# Bias estimates - Gyroscope (columns 16-18)
-ax6 = fig.add_subplot(5, 2, 7)
-bgx = out[:, 16]
-bgy = out[:, 17]
-bgz = out[:, 18]
-ax6.plot(t, bgx, linewidth=1, label='Gyro X bias', alpha=0.7, color='red')
-ax6.plot(t, bgy, linewidth=1, label='Gyro Y bias', alpha=0.7, color='green')
-ax6.plot(t, bgz, linewidth=1, label='Gyro Z bias', alpha=0.7, color='blue')
-ax6.set_xlabel('Time [s]')
-ax6.set_ylabel('Bias [rad/s]')
-ax6.set_title('Gyroscope Bias Estimates')
-ax6.legend(fontsize=8)
-ax6.grid(True)
-
-# Bias estimates - Accelerometer (columns 19-21)
-ax7 = fig.add_subplot(5, 2, 8)
-bax = out[:, 19]
-bay = out[:, 20]
-baz = out[:, 21]
-ax7.plot(t, bax, linewidth=1, label='Accel X bias', alpha=0.7, color='red')
-ax7.plot(t, bay, linewidth=1, label='Accel Y bias', alpha=0.7, color='green')
-ax7.plot(t, baz, linewidth=1, label='Accel Z bias', alpha=0.7, color='blue')
-ax7.set_xlabel('Time [s]')
-ax7.set_ylabel('Bias [m/s²]')
-ax7.set_title('Accelerometer Bias Estimates')
-ax7.legend(fontsize=8)
-ax7.grid(True)
-
-# Gyroscope components (raw FC measurements, rad/s)
-ax_gyro = fig.add_subplot(5, 2, 9)
-if len(fc_gyro) > 0:
-    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 0], 'r-', linewidth=1, label='Gyro X', alpha=0.8)
-    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 1], 'g-', linewidth=1, label='Gyro Y', alpha=0.8)
-    ax_gyro.plot(fc_gyro_t, fc_gyro[:, 2], 'b-', linewidth=1, label='Gyro Z', alpha=0.8)
-ax_gyro.set_xlabel('Time [s]')
-ax_gyro.set_ylabel('Angular rate [rad/s]')
-ax_gyro.set_title('Gyroscope Components (FC raw)')
-ax_gyro.legend(fontsize=8)
-ax_gyro.grid(True)
-
-# Magnetometer attitude snapshot (cols 25-27: mag_roll, mag_pitch, mag_yaw)
-ax8 = fig.add_subplot(5, 2, 10)
-if out.shape[1] > 27:
-    mag_valid = np.isfinite(out[:, 25:28]).all(axis=1)
-    if mag_valid.any():
-        mag_roll  = np.degrees(out[mag_valid, 25])
-        mag_pitch = np.degrees(out[mag_valid, 26])
-        mag_yaw   = np.degrees(out[mag_valid, 27])
-        ax8.plot(t[mag_valid], mag_roll,  'r-', linewidth=1.5, label='Mag Roll')
-        ax8.plot(t[mag_valid], mag_pitch, 'g-', linewidth=1.5, label='Mag Pitch')
-        ax8.plot(t[mag_valid], mag_yaw,   'b-', linewidth=1.5, label='Mag Yaw')
-    if len(fc_att) > 0:
-        ax8.plot(fc_att_t, np.degrees(fc_att[:, 0]), 'r--', linewidth=1, alpha=0.6, label='FC Roll')
-        ax8.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.6, label='FC Pitch')
-        ax8.plot(fc_att_t, np.degrees(fc_att[:, 2]), 'b--', linewidth=1, alpha=0.6, label='FC Yaw')
-else:
-    ax8.text(0.5, 0.5, 'No mag attitude data\n(re-run eqf_filter.py)', ha='center', va='center',
-             transform=ax8.transAxes)
-ax8.set_xlabel('Time [s]')
-ax8.set_ylabel('Angle [deg]')
-ax8.set_title('Magnetometer Attitude Estimate (at mag updates)')
-ax8.legend(fontsize=7, ncol=2)
-ax8.grid(True)
+# Pitch (alone)
+ax_pitch = fig.add_subplot(3, 2, 6)
+ax_pitch.plot(t, pitch_arr, 'g-', linewidth=1, label='TG-EqF Pitch')
+if len(fc_att) > 0:
+    ax_pitch.plot(fc_att_t, np.degrees(fc_att[:, 1]), 'g--', linewidth=1, alpha=0.7, label='FC Pitch')
+ax_pitch.set_xlabel('Time [s]')
+ax_pitch.set_ylabel('Angle [deg]')
+ax_pitch.set_title('Pitch — TG-EqF vs FC')
+ax_pitch.legend(fontsize=8)
+ax_pitch.grid(True)
 
 # Add title indicating data source
 # (data_type already defined in file loading section)
@@ -506,9 +441,40 @@ if diag_data is not None:
         ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
         ax_anees.fill_between(anees_times, np.maximum(0, anees_mean - anees_std), anees_mean + anees_std,
                              color='red', alpha=0.1, label=f'±1σ: {anees_std:.1f}')
+    # FC-based NEES: interpolate filter state to FC timestamps, normalise by P_0 diagonal
+    # sigma_pos=1 m, sigma_vel=10 m/s, sigma_att=1 rad  (matches P_0 in eqf_filter.py)
+    _sp, _sv, _sa = 1.0, 10.0, 1.0
+    if len(fc_pos) > 0 and len(fc_t) > 0:
+        _fc_t = np.asarray(fc_t)
+        _valid = (np.isfinite(fc_pos).all(axis=1) & (_fc_t >= t[0]) & (_fc_t <= t[-1]))
+        _fc_tv = _fc_t[_valid]
+        if len(_fc_tv) > 0:
+            _p = np.column_stack([np.interp(_fc_tv, t, a) for a in (px, py, pz)])
+            _ep = _p - fc_pos[_valid]
+            ax_anees.plot(_fc_tv, np.sum(_ep**2, axis=1) / (3 * _sp**2),
+                          lw=0.8, color='steelblue', alpha=0.8, label='Pos NEES vs FC')
+            if len(fc_vel) == len(fc_pos):
+                _v = np.column_stack([np.interp(_fc_tv, t, a) for a in (vx, vy, vz)])
+                _ev = _v - fc_vel[_valid]
+                ax_anees.plot(_fc_tv, np.sum(_ev**2, axis=1) / (3 * _sv**2),
+                              lw=0.8, color='darkorange', alpha=0.8, label='Vel NEES vs FC')
+    if len(fc_att) > 0 and len(fc_att_t) > 0:
+        _fc_ta = np.asarray(fc_att_t)
+        _va = (np.isfinite(fc_att).all(axis=1) & (_fc_ta >= t[0]) & (_fc_ta <= t[-1]))
+        _fc_tav = _fc_ta[_va]
+        if len(_fc_tav) > 0:
+            _dcm = np.column_stack([np.interp(_fc_tav, t, out[:, 7+j]) for j in range(9)]).reshape(-1, 3, 3)
+            _qf  = Rotation.from_matrix(_dcm).as_quat()
+            _qfc = Rotation.from_euler('ZYX', fc_att[_va][:, ::-1]).as_quat()
+            _dot = np.clip(np.abs(np.sum(_qf * _qfc, axis=1)), 0.0, 1.0)
+            _aerr = 2.0 * np.arccos(_dot)
+            ax_anees.plot(_fc_tav, _aerr**2 / _sa**2,
+                          lw=0.8, color='seagreen', alpha=0.8, label='Att NEES vs FC')
+    ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
+
     ax_anees.set_xlabel('Time [s]', fontsize=11)
     ax_anees.set_ylabel('ANEES Value', fontsize=11)
-    ax_anees.set_title('Avg Normalized Estimation Error Squared', fontsize=12, fontweight='bold')
+    ax_anees.set_title('ANEES vs FC (pos/vel/att, normalised by P_0)', fontsize=12, fontweight='bold')
     ax_anees.legend(fontsize=9, loc='best')
     ax_anees.grid(True, alpha=0.3)
 

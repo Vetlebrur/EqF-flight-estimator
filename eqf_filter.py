@@ -30,8 +30,11 @@ DATASET = "full"
 GNSS_UPDATE_FREQ_HZ = 0.1   # GNSS update frequency (Hz) — update every 1/f seconds
 
 # --- Update toggles ---
-USE_GNSS_UPDATE = True
-USE_MAG_UPDATE  = False
+USE_GNSS_UPDATE       = True
+USE_MAG_UPDATE        = False
+USE_MA_FILTER         = False   # Moving average pre-filter on gyro/accel (window=5)
+USE_EULER_DISCR       = False  # Euler discretization of A (Φ=I+A·dt) instead of expm(A·dt)
+USE_RESET             = False   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
 # =============================================================================
 # Constants and Physical Parameters
 # =============================================================================
@@ -55,7 +58,7 @@ P_0_blocks = [
 
 # --- Process Noise (Q) ---
 Q_rot_var = 1e-3               # [0:3] rotation process noise
-Q_vel_var = 1e-1                # [3:6] velocity process noise
+Q_vel_var = 1e-0                # [3:6] velocity process noise
 Q_pos_var = 1e-2                # [6:9] position process noise
 Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk (very tight)
 Q_accel_bias_var = (1e-5)**2    # [12:15] accel bias random walk (very tight)
@@ -68,7 +71,6 @@ R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
 R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3.log(R_err) in radians.
-# R_mag=400.0 rad² tuned via 48-config sweep with correct body frame (accel=[ax,ay,az]).
 R_mag_var = 100.0  # rad²
 
 # =============================================================================
@@ -78,8 +80,8 @@ R_mag_var = 100.0  # rad²
 #   default [0,1,2] = identity (mx→x, my→y, mz→z)
 # MAG_AXIS_SIGNS: sign applied to each body axis after permutation
 #   default [1, 1, 1]; negate if sensor axis is mounted in opposite direction
-MAG_AXIS_ORDER = np.array([0, 1, 2])   # sensor: mx→body X, mz→body Y, my→body Z
-MAG_AXIS_SIGNS = np.array([1.0, 1.0, 1.0])   # tuned: confirmed by FC/GNSS yaw alignment
+MAG_AXIS_ORDER = np.array([0, 2, 1])   # sensor: mx→body X, mz→body Y, my→body Z
+MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])   # tuned: confirmed by FC/GNSS yaw alignment
 
 # WMM2025 for NIMBUS24 launch site (Ribeira Grande, Azores, 39.39°N, 8.29°W)
 # Declination: -13.4° (West), Inclination: 56.8°, Magnitude: ~47000 nT
@@ -247,7 +249,7 @@ class TGEqF:
         self._init_accel_n = 0
 
         # Moving average filter for smoothing noisy sensor measurements
-        self.ma_window = 5  # Reduced to minimize lag (5-10 samples)
+        self.ma_window = 10 
         self.gyro_buffer = []
         self.accel_buffer = []
 
@@ -298,7 +300,7 @@ class TGEqF:
         return xi
 
     def _apply_moving_average(self, measurement: np.ndarray, buffer: list[np.ndarray]) -> np.ndarray:
-        """Apply moving average filter with window size of 10."""
+        """Apply moving average filter with window size of self.ma_window."""
         buffer.append(measurement.flatten())
         if len(buffer) > self.ma_window:
             buffer.pop(0)
@@ -329,9 +331,9 @@ class TGEqF:
             self.t_prev = t
             return
 
-        # Skip moving average smoothing to test if it causes divergence
-        #gyro = self._apply_moving_average(gyro, self.gyro_buffer)
-        #accel = self._apply_moving_average(accel, self.accel_buffer)
+        if USE_MA_FILTER:
+            gyro = self._apply_moving_average(gyro, self.gyro_buffer)
+            accel = self._apply_moving_average(accel, self.accel_buffer)
 
         U = InputSpace()
         U.w = SO3.wedge(gyro)
@@ -346,7 +348,7 @@ class TGEqF:
         self.X_hat = self.X_hat * SymGroup.exp(lift * dt)  # type: ignore[attr-defined]
 
         A = self.calculate_A(U)
-        Phi = expm(A * dt)
+        Phi = np.eye(18) + A * dt if USE_EULER_DISCR else expm(A * dt)
         self.Sigma = Phi @ self.Sigma @ Phi.T + self.Q * dt
         self.Sigma = sym(self.Sigma)
 
@@ -370,43 +372,44 @@ class TGEqF:
 
 
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
-        """Pitch-only magnetometer update — body-Y projection of SO(3) innovation."""
+        """Full 3-axis magnetometer update. C = [-ŷ∧ŷ∧, 0, ...].
+        Innovation: δ = log( SO3(mag) · R_hat⁻¹ )
+        where SO3(mag) = from_two_vectors_rotation(mag, m_ref) maps the body-frame
+        measurement to the NED reference, giving zero innovation when R_hat is correct.
+        """
         mag = np.asarray(mag, dtype=float).reshape(3)
         mag_n = np.linalg.norm(mag)
         if mag_n < 1e-6:
             return
         mag = mag / mag_n
 
-        R_hat = self.xi_hat().T.R().as_matrix()
-        y_hat = R_hat.T @ MAG_FIELD_NED.flatten()
-        y_hat /= np.linalg.norm(y_hat) + 1e-12
+        xi_hat = self.xi_hat()
+        R_hat  = xi_hat.T.R().as_matrix()
+        y_hat  = (R_hat.T @ MAG_FIELD_NED.flatten())
+        y_hat /= np.linalg.norm(y_hat) + 1e-12   # predicted measurement (body frame)
 
-        # Full SO(3) innovation then project onto body-Y (pitch only)
-        delta_3d = SO3.log(SO3(from_two_vectors_rotation(y_hat, mag))).flatten()
-        delta_pitch = float(delta_3d[1])
+        # SO(3) log innovation: δ = log( SO3(mag) · R_hat⁻¹ )
+        R_obs  = from_two_vectors_rotation(mag, MAG_FIELD_NED.flatten())  # SO3(mag)
+        R_err  = R_obs @ R_hat.T                                          # · R_hat⁻¹
+        delta  = SO3.log(SO3(R_err)).reshape(3, 1)
 
-        if abs(delta_pitch) < 0.01:
-            return
-
-        # 1×18 C: body-Y row of the 3×18 attitude Jacobian
-        body_y = np.array([0., 1., 0.])
-        C_pitch = (body_y @ self.calculate_C_mag()).reshape(1, 18)
-
-        R_var = np.array([[self.R_mag[0, 0]]])    # 1×1
-        S = C_pitch @ self.Sigma @ C_pitch.T + R_var  # 1×1
-        K = self.Sigma @ C_pitch.T @ np.linalg.inv(S)  # 18×1
+        C = self.calculate_C_mag()                # 3×18
+        S = C @ self.Sigma @ C.T + self.R_mag     # 3×3
+        K = self.Sigma @ C.T @ np.linalg.inv(S)  # 18×3
 
         if t is not None:
-            self.update_times.append(("mag", t, float(delta_pitch**2 / S[0, 0])))
+            anis_raw = float(np.squeeze(delta.T @ np.linalg.inv(S) @ delta))
+            self.update_times.append(("mag", t, anis_raw / 3.0))
 
-        Delta = self.innovationLift @ (K * delta_pitch)  # 18×1
+        Delta = self.innovationLift @ (K @ delta)  # 18×1
         self.X_hat = SymGroup.exp(Delta) * self.X_hat
 
-        IKC = np.eye(18) - K @ C_pitch
-        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ R_var @ K.T)
+        IKC = np.eye(18) - K @ C
+        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ self.R_mag @ K.T)
+        self._reset(Delta)
 
         euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
-        self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])  # [roll, pitch, yaw]
+        self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])
         self.mag_update_count += 1
 
     def GNSS_update(self, pos_NED: np.ndarray, vel_NED: np.ndarray, t: float | None = None) -> None:
@@ -437,6 +440,9 @@ class TGEqF:
         self.Sigma = IKC @ self.Sigma @ IKC.T + K @ self.R_gnss @ K.T  # Joseph form
         self.Sigma = sym(self.Sigma)
 
+        if USE_RESET:
+            self._reset(Delta)
+
         # Track when last GNSS update occurred
         if t is not None:
             self.t_last_gnss = t
@@ -461,6 +467,21 @@ class TGEqF:
             return anis
         except (np.linalg.LinAlgError, ValueError):
             return None
+
+    # =========================================================================
+
+    def _ad18(self, delta: np.ndarray) -> np.ndarray:
+        """18×18 adjoint of the symmetry-group Lie algebra at tangent vector delta (18×1)."""
+        ad_se = SE23.adjoint(delta[0:9].reshape(9, 1))
+        ad = np.zeros((18, 18))
+        ad[0:9,  0:9]  = ad_se
+        ad[9:18, 9:18] = ad_se
+        return ad
+
+    def _reset(self, Delta: np.ndarray) -> None:
+        """Post-update covariance reset. First-order left Jacobian: J_l ≈ I + ½ ad_Δ."""
+        J = np.eye(18) + 0.5 * self._ad18(Delta)
+        self.Sigma = sym(J @ self.Sigma @ J.T)
 
     # =========================================================================
 
@@ -520,16 +541,10 @@ class TGEqF:
 
         return At
 
-    def calculate_C_mag(self) -> np.ndarray:
+    def calculate_C_mag(self, y_hat: np.ndarray) -> np.ndarray:
         Ct = np.zeros((3, 18))
-
-        # Project reference magnetometer to body frame using composed state
-        xi_hat = self.xi_hat()
-        y_hat = xi_hat.T.R().as_matrix().T @ self.mag_meas_0
-        y_hat = y_hat / (np.linalg.norm(y_hat) + 1e-8)  # Normalize (keep as column vector for SO3.wedge)
-
-        Ct[0:3, 0:3] = -SO3.wedge(y_hat)
-
+        y_wedge = SO3.wedge(y_hat)
+        Ct[0:3, 0:3] = -(y_wedge @ y_wedge)   # = I - y_hat @ y_hat.T
         return Ct
 
     def calculate_C_gnss(self) -> np.ndarray:
@@ -602,10 +617,11 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
 
     # Select data source based on configuration
     if csv_in is None:
+        _tag = ("_ma" if USE_MA_FILTER else "") + ("_euler" if USE_EULER_DISCR else "")
         _datasets = {
-            "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",         "outputs/tg_eqf_output_full.csv"),
-            "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",      "outputs/tg_eqf_output_30s.csv"),
-            "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv",  "outputs/tg_eqf_output_1s_loop.csv"),
+            "full":    ("data/20241011_NIMBUS24_Flight_FC_Data.csv",         f"outputs/tg_eqf_output_full{_tag}.csv"),
+            "30s":     ("data/20241011_NIMBUS24_Flight_FC_Data_30s.csv",      f"outputs/tg_eqf_output_30s{_tag}.csv"),
+            "1s_loop": ("data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv",  f"outputs/tg_eqf_output_1s_loop{_tag}.csv"),
         }
         if DATASET not in _datasets:
             raise ValueError(f"Unknown DATASET {DATASET!r}. Choose from: {list(_datasets)}")

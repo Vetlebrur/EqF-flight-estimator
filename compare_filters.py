@@ -294,7 +294,7 @@ if have_eqf and len(gnss_pos) > 0:
 if have_ekf and len(gnss_pos) > 0:
     p_i = np.column_stack([np.interp(gnss_t, ekf_t, ekf_pos[:, i]) for i in range(3)])
     ax.plot(gnss_t, np.linalg.norm(p_i - gnss_pos, axis=1), 'r-', lw=1, alpha=0.6, label='EKF')
-ax.set_xlabel('Time [s]'); ax.set_ylabel('Position Error [m]'); ax.set_title('Position Error vs GNSS')
+ax.set_yscale('log'); ax.set_xlabel('Time [s]'); ax.set_ylabel('Position Error [m]'); ax.set_title('Position Error vs GNSS')
 ax.legend(fontsize=7); ax.grid(True)
 
 # --- Speed ---

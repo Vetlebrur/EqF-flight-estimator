@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as ScipyRot
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 0.1
+GNSS_UPDATE_FREQ_HZ = 1
 
 # =============================================================================
 # Constants
@@ -41,8 +41,8 @@ MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])
 Q_pos        = np.eye(3) * 1e-2
 Q_vel        = np.eye(3) * 1e-1
 Q_att        = np.eye(3) * 1e-2
-Q_gyro_bias  = np.eye(3) * (1e-2)**2
-Q_accel_bias = np.eye(3) * (1e-2)**2
+Q_gyro_bias  = np.eye(3) * (1e-6)**2
+Q_accel_bias = np.eye(3) * (1e-5)**2
 
 # Measurement noise
 R_gnss_pos = np.eye(3) * 1.0

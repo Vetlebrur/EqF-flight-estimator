@@ -192,69 +192,51 @@ def add_fc_ref(ax, y_fc, label="FC"):
 
 # --- Row 0: Position North / East / Altitude ---
 ax = axes[0, 0]
-add_gnss_ref(ax, gnss_pos[:, 0], "GNSS North")
-add_fc_ref(ax, fc_pos[:, 0],     "FC North")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["px"], color=c, lw=1, label=f"{freq} Hz")
-ax.set_title("Position North [m]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Position North [m]"); ref_style(ax)
 
 ax = axes[0, 1]
-add_gnss_ref(ax, gnss_pos[:, 1], "GNSS East")
-add_fc_ref(ax, fc_pos[:, 1],     "FC East")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["py"], color=c, lw=1, label=f"{freq} Hz")
-ax.set_title("Position East [m]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Position East [m]"); ref_style(ax)
 
 ax = axes[0, 2]
-add_gnss_ref(ax, -gnss_pos[:, 2], "GNSS Alt")
-add_fc_ref(ax,   -fc_pos[:, 2],   "FC Alt")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], -d["pz"], color=c, lw=1, label=f"{freq} Hz")
-ax.set_title("Altitude [m]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Altitude [m]"); ref_style(ax)
 
-# --- Row 1: Velocity North / East / Up + Speed ---
+# --- Row 1: Velocity North / East / Up ---
 ax = axes[1, 0]
-add_gnss_ref(ax, gnss_vel[:, 0], "GNSS Vn")
-add_fc_ref(ax, fc_vel[:, 0],     "FC Vn")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["vx"], color=c, lw=1)
-ax.set_title("Velocity North [m/s]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Velocity North [m/s]"); ref_style(ax)
 
 ax = axes[1, 1]
-add_gnss_ref(ax, gnss_vel[:, 1], "GNSS Ve")
-add_fc_ref(ax, fc_vel[:, 1],     "FC Ve")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["vy"], color=c, lw=1)
-ax.set_title("Velocity East [m/s]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Velocity East [m/s]"); ref_style(ax)
 
 ax = axes[1, 2]
-add_gnss_ref(ax, -gnss_vel[:, 2], "GNSS Vu")
-add_fc_ref(ax, -fc_vel[:, 2],     "FC Vu")
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], -d["vz"], color=c, lw=1)
-ax.set_title("Velocity Up [m/s]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Velocity Up [m/s]"); ref_style(ax)
 
 # --- Row 2: Attitude Roll / Pitch / Yaw ---
 ax = axes[2, 0]
-if len(fc_att) > 0:
-    ax.plot(fc_att_t, np.degrees(fc_att[:, 0]), "k--", lw=1, alpha=0.5, label="FC", zorder=0)
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["roll"], color=c, lw=1)
-ax.set_title("Roll [deg]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Roll [deg]"); ref_style(ax)
 
 ax = axes[2, 1]
-if len(fc_att) > 0:
-    ax.plot(fc_att_t, np.degrees(fc_att[:, 1]), "k--", lw=1, alpha=0.5, label="FC", zorder=0)
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["pitch"], color=c, lw=1)
-ax.set_title("Pitch [deg]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Pitch [deg]"); ref_style(ax)
 
 ax = axes[2, 2]
-if len(fc_att) > 0:
-    ax.plot(fc_att_t, np.degrees(fc_att[:, 2]), "k--", lw=1, alpha=0.5, label="FC", zorder=0)
 for (freq, d), c in zip(plot_runs, plot_colors):
     ax.plot(d["t"], d["yaw"], color=c, lw=1)
-ax.set_title("Yaw [deg]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+ax.set_title("Yaw [deg]"); ref_style(ax)
 
 # --- Row 3: Position error vs GNSS (full width) ---
 ax = axes[3, 0]
@@ -262,14 +244,12 @@ if len(gnss_pos) > 0:
     for (freq, d), c in zip(plot_runs, plot_colors):
         p_i = np.column_stack([np.interp(gnss_t, d["t"], d[k]) for k in ("px", "py", "pz")])
         err = np.linalg.norm(p_i - gnss_pos, axis=1)
-        ax.plot(gnss_t, err, color=c, lw=1, label=f"{freq} Hz")
-ax.set_yscale("log"); ax.set_title("Position Error vs GNSS [m, log]"); ax.set_xlabel("Time [s]"); ref_style(ax)
+        ax.plot(gnss_t, err, color=c, lw=0.5, label=f"{freq} Hz")
+ax.set_yscale("log"); ax.set_title("Position Error vs GNSS [m, log]"); ref_style(ax)
 
 # --- Shared legend ---
 handles = [plt.Line2D([0], [0], color=c, lw=2, label=f"{freq} Hz")
            for (freq, _), c in zip(plot_runs, plot_colors)]
-handles += [plt.Line2D([0], [0], color="k",    lw=1.2, ls="--", label="GNSS ref"),
-            plt.Line2D([0], [0], color="gray",  lw=1.0, ls=":",  label="FC ref")]
 fig.legend(handles=handles, loc="lower center", ncol=len(handles),
            fontsize=8, bbox_to_anchor=(0.5, 0.0))
 
