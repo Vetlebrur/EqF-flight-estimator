@@ -16,7 +16,7 @@ sys.path.insert(0, str(ref_path))
 utils_path = ref_path / "Utils"
 sys.path.insert(0, str(utils_path))
 from matrix_math import *
-from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction, f_10, stateActionDiff
+from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction
 
 # =============================================================================
 # Configuration
@@ -35,7 +35,7 @@ USE_GNSS_UPDATE       = True
 USE_MAG_UPDATE        = False
 USE_MA_FILTER         = False   # Moving average pre-filter on gyro/accel (window=5)
 USE_EULER_DISCR       = False  # Euler discretization of A (Φ=I+A·dt) instead of expm(A·dt)
-USE_RESET             = False   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
+USE_RESET             = True   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
 # =============================================================================
 # Constants and Physical Parameters
 # =============================================================================
@@ -43,6 +43,8 @@ USE_RESET             = False   # post-update covariance reset on Lie group mani
 g = 9.81  # Gravitational acceleration (m/s²)
 G = np.zeros((5, 5))
 G[2, 3] = g
+N = np.zeros((5, 5))
+N[3, 4] = 1.0
 
 # =============================================================================
 # Noise Parameters
@@ -58,9 +60,9 @@ P_0_blocks = [
 ]
 
 # --- Process Noise (Q) ---
-Q_rot_var = 1e-3               # [0:3] rotation process noise
-Q_vel_var = 1e-0                # [3:6] velocity process noise
-Q_pos_var = 1e-2                # [6:9] position process noise
+Q_gyro_var = 1e-3               # [0:3] rotation process noise
+Q_accel_var = 1e-1                # [3:6] velocity process noise
+Q_virt_var = 1e-2                # [6:9] position process noise
 Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk (very tight)
 Q_accel_bias_var = (1e-5)**2    # [12:15] accel bias random walk (very tight)
 Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
@@ -132,12 +134,16 @@ def blockdiag(*arrs: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 def calculate_lift(xi: State, U: InputSpace) -> np.ndarray:
+    W     = U.as_W_mat()
+    B     = SE23.wedge(xi.b)
+    T     = xi.T.as_matrix()
+    T_inv = xi.T.inv().as_matrix()
+
+    Lambda_1 = SE23.vee(W - B + N + T_inv @ (G - N) @ T)
+
     Lambda = np.zeros((18, 1))
-    U_minus_b = U.as_W_vec() - xi.b
-    T_inv_mat = xi.T.inv().as_matrix()
-    grav_vee = SE23.vee(T_inv_mat @ (G + f_10(xi.T.as_matrix())))
-    Lambda[0:9, 0:1] = U_minus_b + grav_vee
-    Lambda[9:18, 0:1] = SE23.adjoint(xi.b) @ Lambda[0:9, 0:1] - U.tau
+    Lambda[0:9]  = Lambda_1
+    Lambda[9:18] = SE23.adjoint(xi.b) @ Lambda_1 - U.tau
     return Lambda
 
 # =============================================================================
@@ -196,7 +202,7 @@ class TGEqF:
         self.t_prev = None
         self.t_last_gnss = None
         self.t_last_imu = None
-        self.innovationLift = np.linalg.pinv(stateActionDiff(self.xi_0))
+
         self.attitude_initialized = False
         self._init_accel_accum = np.zeros(3)
         self._init_accel_n = 0
@@ -216,9 +222,9 @@ class TGEqF:
         self.R_gnss = blockdiag(np.eye(3) * R_gnss_pos_var, np.eye(3) * R_gnss_vel_var)
         self.R_mag  = np.eye(3) * R_mag_var
         self.Q = blockdiag(
-            np.eye(3) * Q_rot_var,
-            np.eye(3) * Q_vel_var,
-            np.eye(3) * Q_pos_var,
+            np.eye(3) * Q_gyro_var,
+            np.eye(3) * Q_accel_var,
+            np.eye(3) * Q_virt_var,
             np.eye(3) * Q_gyro_bias_var,
             np.eye(3) * Q_accel_bias_var,
             np.eye(3) * Q_virtual_bias_var,
@@ -274,11 +280,15 @@ class TGEqF:
 
         lift = calculate_lift(xi_hat, U)
 
-        self.X_hat = self.X_hat * SymGroup.exp(lift * dt)  # type: ignore[attr-defined]
-
         A = self.calculate_A(U)
         Phi = np.eye(18) + A * dt if USE_EULER_DISCR else expm(A * dt)
-        self.Sigma = Phi @ self.Sigma @ Phi.T + self.Q * dt
+        Bt_block = self.X_hat.B.Adjoint()
+        Bt = np.zeros((18, 18))
+        Bt[0:9,  0:9]  = Bt_block
+        Bt[9:18, 9:18] = Bt_block
+
+        self.X_hat = self.X_hat * SymGroup.exp(lift * dt)  # type: ignore[attr-defined]
+        self.Sigma = Phi @ self.Sigma @ Phi.T + Bt @ self.Q @ Bt.T * dt
         self.Sigma = sym(self.Sigma)
 
         # Only decompose when diagonal hints at overflow (avoids per-step eigh)
@@ -323,13 +333,13 @@ class TGEqF:
             anis_raw = float(np.squeeze(delta.T @ np.linalg.inv(S) @ delta))
             self.update_times.append(("mag", t, anis_raw / 3.0))
 
-        Delta = self.innovationLift @ (K_att @ delta)
+        Delta = K_att @ delta
         self.X_hat = SymGroup.exp(Delta) * self.X_hat
 
         IKC = np.eye(18) - K_att @ C
         self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K_att @ self.R_mag @ K_att.T)
         if USE_RESET:
-            self._reset(Delta)
+            self._reset(K_att @ delta)
 
         euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
         self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])
@@ -345,7 +355,8 @@ class TGEqF:
         C = self.calculate_C_gnss()
         S = C @ self.Sigma @ C.T + self.R_gnss
         K = self.Sigma @ C.T @ np.linalg.inv(S)
-        Delta = K @ delta_u
+        K_delta = K @ delta_u
+        Delta = K_delta
 
         anis_raw = self.compute_anis(delta_u, S)
         if t is not None and anis_raw is not None:
@@ -356,7 +367,7 @@ class TGEqF:
         self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ self.R_gnss @ K.T)
 
         if USE_RESET:
-            self._reset(Delta)
+            self._reset(K_delta)
         if t is not None:
             self.t_last_gnss = t
 
@@ -378,17 +389,16 @@ class TGEqF:
 
     # =========================================================================
 
-    def _ad18(self, delta: np.ndarray) -> np.ndarray:
-        """18×18 adjoint of the symmetry-group Lie algebra at tangent vector delta (18×1)."""
-        ad_se = SE23.adjoint(delta[0:9].reshape(9, 1))
+    def _grp_adj(self, l: np.ndarray) -> np.ndarray:
         ad = np.zeros((18, 18))
-        ad[0:9,  0:9]  = ad_se
-        ad[9:18, 9:18] = ad_se
+        ad[0:9,  0:9]  = SE23.adjoint(l[0:9])
+        ad[9:18, 0:9]  = SE23.adjoint(l[9:18])
+        ad[9:18, 9:18] = SE23.adjoint(l[0:9])
         return ad
 
-    def _reset(self, Delta: np.ndarray) -> None:
-        """Post-update covariance reset. First-order left Jacobian: J_l ≈ I + ½ ad_Δ."""
-        J = np.eye(18) + 0.5 * self._ad18(Delta)
+    def _reset(self, K_delta: np.ndarray) -> None:
+        """Post-update covariance reset. Left Jacobian via expm: J_l = expm(½ grp_adj(K·δ))."""
+        J = expm(0.5 * self._grp_adj(K_delta))
         self.Sigma = sym(J @ self.Sigma @ J.T)
 
     # =========================================================================
