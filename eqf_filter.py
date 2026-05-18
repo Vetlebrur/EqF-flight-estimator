@@ -32,7 +32,7 @@ MAG_UPDATE_FREQ_HZ  = 1.0   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
 USE_GNSS_UPDATE       = True
-USE_MAG_UPDATE        = False
+USE_MAG_UPDATE        = True
 USE_MA_FILTER         = False   # Moving average pre-filter on gyro/accel (window=5)
 USE_EULER_DISCR       = False  # Euler discretization of A (Φ=I+A·dt) instead of expm(A·dt)
 USE_RESET             = True   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
@@ -73,10 +73,9 @@ Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
 R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
 R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
-# Magnetometer noise: innovation is (mag - ŷ), dimensionless unit-vector difference.
-# Unit-vector innovations are bounded by [-2, 2]; typical calibrated noise ~0.05 units.
-# Set large (0.5) initially — tune down once axis mapping is verified.
-R_mag_var = 0.5  # dimensionless²
+# Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
+# VN200 calibrated AHRS uses 0.04 rad² (~11.5° std). Raw TRIAD from accel+mag is noisier.
+R_mag_var = 10  # rad²  (~57° std per axis); ANIS tuned: raw TRIAD is noisy
 
 # =============================================================================
 # Magnetometer configuration
@@ -206,6 +205,7 @@ class TGEqF:
         self.attitude_initialized = False
         self._init_accel_accum = np.zeros(3)
         self._init_accel_n = 0
+        self._last_accel: np.ndarray | None = None
 
         self.ma_window = 10
         self.gyro_buffer = []
@@ -270,6 +270,8 @@ class TGEqF:
             gyro = self._apply_moving_average(gyro, self.gyro_buffer)
             accel = self._apply_moving_average(accel, self.accel_buffer)
 
+        self._last_accel = accel.flatten()
+
         U = InputSpace()
         U.w = SO3.wedge(gyro)
         U.a = accel
@@ -310,36 +312,66 @@ class TGEqF:
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
         mag = np.asarray(mag, dtype=float).reshape(3)
         mag_n = np.linalg.norm(mag)
-        if mag_n < 1e-6:
+        if mag_n < 1e-6 or self._last_accel is None:
             return
-        mag = mag / mag_n
 
+        # Quasi-static gate: skip during powered flight where accel ≠ gravity
+        accel_norm = np.linalg.norm(self._last_accel)
+        if abs(accel_norm - g) > 3.0:
+            return
+
+        # Build R_triad (body→NED) via TRIAD from accel + mag
+        g_body = -self._last_accel / accel_norm  # gravity direction in body frame
+        m_body = mag / mag_n
+
+        g_ned = np.array([0.0, 0.0, 1.0])
+        m_ned = MAG_FIELD_NED.flatten()
+
+        cross_b = np.cross(g_body, m_body)
+        cross_n = np.cross(g_ned, m_ned)
+        cb, cn = np.linalg.norm(cross_b), np.linalg.norm(cross_n)
+        if cb < 1e-6 or cn < 1e-6:
+            return  # degenerate: gravity and mag nearly collinear
+
+        t2_b = cross_b / cb
+        t2_n = cross_n / cn
+        T_body = np.column_stack([g_body, t2_b, np.cross(g_body, t2_b)])
+        T_ned  = np.column_stack([g_ned,  t2_n, np.cross(g_ned,  t2_n)])
+        R_triad = T_ned @ T_body.T
+
+        # Project onto SO(3)
+        U, _, Vt = np.linalg.svd(R_triad)
+        if np.linalg.det(U @ Vt) < 0:
+            U[:, -1] *= -1
+        R_triad = U @ Vt
+
+        # SO3 log innovation: delta = log(R_triad @ R_hat^T)  (same form as VN200 MagUpdate)
         xi_hat = self.xi_hat()
-        R_hat  = xi_hat.T.R().as_matrix()
-        y_hat  = R_hat.T @ MAG_FIELD_NED.flatten()
-        y_hat /= np.linalg.norm(y_hat) + 1e-12
+        R_hat = xi_hat.T.R().as_matrix()
+        R_err = R_triad @ R_hat.T
+        U2, _, Vt2 = np.linalg.svd(R_err)
+        if np.linalg.det(U2 @ Vt2) < 0:
+            U2[:, -1] *= -1
+        R_err = U2 @ Vt2
+        delta = ScipyRot.from_matrix(R_err).as_rotvec().reshape(3, 1)
 
-        delta = (mag - y_hat).reshape(3, 1)
+        # C = [I_3 | 0_{3×15}]  (same as VN200 MagUpdate)
+        C = np.zeros((3, 18))
+        C[0:3, 0:3] = np.eye(3)
 
-        C = self.calculate_C_mag(y_hat)
         S = C @ self.Sigma @ C.T + self.R_mag
         K = self.Sigma @ C.T @ np.linalg.inv(S)
-
-        # Only correct attitude rows — prevents bias/position corruption via off-diagonal Σ.
-        K_att = np.zeros_like(K)
-        K_att[0:3, :] = K[0:3, :]
+        K_delta = K @ delta
 
         if t is not None:
             anis_raw = float(np.squeeze(delta.T @ np.linalg.inv(S) @ delta))
             self.update_times.append(("mag", t, anis_raw / 3.0))
 
-        Delta = K_att @ delta
-        self.X_hat = SymGroup.exp(Delta) * self.X_hat
-
-        IKC = np.eye(18) - K_att @ C
-        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K_att @ self.R_mag @ K_att.T)
+        self.X_hat = SymGroup.exp(K_delta) * self.X_hat
+        IKC = np.eye(18) - K @ C
+        self.Sigma = sym(IKC @ self.Sigma @ IKC.T + K @ self.R_mag @ K.T)
         if USE_RESET:
-            self._reset(K_att @ delta)
+            self._reset(K_delta)
 
         euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
         self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])
