@@ -71,7 +71,7 @@ _datasets = {
 }
 if DATASET not in _datasets:
     raise ValueError(f"Unknown DATASET {DATASET!r}. Choose from: {list(_datasets)}")
-input_csv, output_csv, data_type = _datasets[DATASET]
+input_csv, output_csv, data_type = _datasets[DATASET] 
 print(f"Loading {data_type} data for plotting")
 
 # Verify output file exists

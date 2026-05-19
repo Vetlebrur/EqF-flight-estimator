@@ -32,7 +32,7 @@ MAG_UPDATE_FREQ_HZ  = 1.0   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
 USE_GNSS_UPDATE       = True
-USE_MAG_UPDATE        = True
+USE_MAG_UPDATE        = False
 USE_MA_FILTER         = False   # Moving average pre-filter on gyro/accel (window=5)
 USE_EULER_DISCR       = False  # Euler discretization of A (Φ=I+A·dt) instead of expm(A·dt)
 USE_RESET             = True   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
@@ -75,7 +75,7 @@ R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
 # VN200 calibrated AHRS uses 0.04 rad² (~11.5° std). Raw TRIAD from accel+mag is noisier.
-R_mag_var = 10  # rad²  (~57° std per axis); ANIS tuned: raw TRIAD is noisy
+R_mag_var = 1.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
 
 # =============================================================================
 # Magnetometer configuration
@@ -110,6 +110,23 @@ MAG_FIELD_NED = _mag_raw / np.linalg.norm(_mag_raw)
 def col(x: Any) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     return x.reshape(-1, 1)
+
+def from_two_vectors_rotation(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray | None:
+    """Minimum-rotation R s.t. R @ v_to ≈ v_from (matches EqFparser.cpp fromTwoVectorsRotation)."""
+    f = v_from / (np.linalg.norm(v_from) + 1e-12)
+    t = v_to / (np.linalg.norm(v_to) + 1e-12)
+    cosine = float(np.clip(f @ t, -1.0, 1.0))
+    if cosine > 1.0 - 1e-12:
+        return np.eye(3)
+    if cosine < -1.0 + 1e-12:
+        perp = np.array([1.0, 0.0, 0.0]) if abs(f[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        axis = np.cross(f, perp)
+        axis /= np.linalg.norm(axis)
+        return ScipyRot.from_rotvec(np.pi * axis).as_matrix()
+    cross = np.cross(f, t)
+    K = SO3.wedge(cross.reshape(3, 1))
+    R = np.eye(3) + K + K @ K / (1.0 + cosine)
+    return R.T  # transpose matches C++ return value
 
 def sym(A: np.ndarray) -> np.ndarray:
     return 0.5 * (A + A.T)
@@ -185,6 +202,14 @@ class TGEqF:
 
         R = T_ned @ T_body.T  # maps body → NED
 
+        # Hard-iron bias: m_avg = m_true + b_hi; m_true = R^T @ MAG_FIELD_NED * |m_avg|
+        if self._init_mag_n > 0:
+            m_avg = self._init_mag_accum / self._init_mag_n
+            m_avg_norm = np.linalg.norm(m_avg)
+            if m_avg_norm > 1e-6:
+                m_expected = R.T @ MAG_FIELD_NED * m_avg_norm
+                self.hard_iron_bias = m_avg - m_expected
+
         se23_init = SE23(R)  # type: ignore[arg-type]
         self.X_hat = SymGroup(se23_init, np.zeros((5, 5)))
         self.attitude_initialized = True
@@ -194,6 +219,8 @@ class TGEqF:
         yaw   = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
         print(f"TRIAD init ({self._init_accel_n} accel samples): "
               f"roll={roll:.1f}°  pitch={pitch:.1f}°  yaw={yaw:.1f}°")
+        b = self.hard_iron_bias
+        print(f"Hard-iron bias estimate: [{b[0]:.4f}, {b[1]:.4f}, {b[2]:.4f}] (sensor units)")
 
     def __init__(self):
         self.X_hat = SymGroup.identity()
@@ -205,7 +232,10 @@ class TGEqF:
         self.attitude_initialized = False
         self._init_accel_accum = np.zeros(3)
         self._init_accel_n = 0
+        self._init_mag_accum = np.zeros(3)
+        self._init_mag_n = 0
         self._last_accel: np.ndarray | None = None
+        self.hard_iron_bias = np.zeros(3)
 
         self.ma_window = 10
         self.gyro_buffer = []
@@ -311,19 +341,22 @@ class TGEqF:
 
     def magnetometer_update(self, mag: np.ndarray, t: float | None = None) -> None:
         mag = np.asarray(mag, dtype=float).reshape(3)
+
+        # Subtract hard-iron bias estimated during TRIAD init (sensor units, body frame)
+        mag = mag - self.hard_iron_bias
+
         mag_n = np.linalg.norm(mag)
         if mag_n < 1e-6 or self._last_accel is None:
             return
 
-        # Quasi-static gate: skip during powered flight where accel ≠ gravity
+        # Quasi-static gate: skip during powered flight / freefall where accel ≠ gravity
         accel_norm = np.linalg.norm(self._last_accel)
         if abs(accel_norm - g) > 3.0:
             return
 
-        # Build R_triad (body→NED) via TRIAD from accel + mag
+        # Build R_triad (body→NED) via TRIAD from accel + corrected mag
         g_body = -self._last_accel / accel_norm  # gravity direction in body frame
         m_body = mag / mag_n
-
         g_ned = np.array([0.0, 0.0, 1.0])
         m_ned = MAG_FIELD_NED.flatten()
 
@@ -331,7 +364,7 @@ class TGEqF:
         cross_n = np.cross(g_ned, m_ned)
         cb, cn = np.linalg.norm(cross_b), np.linalg.norm(cross_n)
         if cb < 1e-6 or cn < 1e-6:
-            return  # degenerate: gravity and mag nearly collinear
+            return
 
         t2_b = cross_b / cb
         t2_n = cross_n / cn
@@ -340,20 +373,19 @@ class TGEqF:
         R_triad = T_ned @ T_body.T
 
         # Project onto SO(3)
-        U, _, Vt = np.linalg.svd(R_triad)
-        if np.linalg.det(U @ Vt) < 0:
-            U[:, -1] *= -1
-        R_triad = U @ Vt
+        U_t, _, Vt_t = np.linalg.svd(R_triad)
+        if np.linalg.det(U_t @ Vt_t) < 0:
+            U_t[:, -1] *= -1
+        R_triad = U_t @ Vt_t
 
-        # SO3 log innovation: delta = log(R_triad @ R_hat^T)  (same form as VN200 MagUpdate)
+        # SO3 log innovation: delta = log(R_triad @ R_hat^T)
         xi_hat = self.xi_hat()
         R_hat = xi_hat.T.R().as_matrix()
         R_err = R_triad @ R_hat.T
-        U2, _, Vt2 = np.linalg.svd(R_err)
-        if np.linalg.det(U2 @ Vt2) < 0:
-            U2[:, -1] *= -1
-        R_err = U2 @ Vt2
-        delta = ScipyRot.from_matrix(R_err).as_rotvec().reshape(3, 1)
+        U, _, Vt = np.linalg.svd(R_err)
+        if np.linalg.det(U @ Vt) < 0:
+            U[:, -1] *= -1
+        delta = ScipyRot.from_matrix(U @ Vt).as_rotvec().reshape(3, 1)
 
         # C = [I_3 | 0_{3×15}]  (same as VN200 MagUpdate)
         C = np.zeros((3, 18))
@@ -595,6 +627,9 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         filt._init_accel_n += 1
         _mag = _mag_raw[axis_order] * axis_signs
         _mag_n = np.linalg.norm(_mag)
+        if _mag_n > 1e-6:
+            filt._init_mag_accum += _mag   # accumulate unnormalized for hard-iron estimate
+            filt._init_mag_n += 1
         if _mag_n > 1e-6 and filt._init_accel_n >= MIN_PRE_INIT:
             filt.initialize_attitude_triad(_mag / _mag_n)
             break
@@ -619,12 +654,13 @@ def run(csv_in: str | None = None, csv_out: str = "outputs/tg_eqf_output.csv",
         _prop_count += 1
 
         mag_raw = row[[_C["mx"], _C["my"], _C["mz"]]]
-        mag = mag_raw[axis_order] * axis_signs
+        mag = mag_raw[axis_order] * axis_signs  # axis-remapped, unnormalized
         mag_norm = np.linalg.norm(mag)
-        if mag_norm > 1e-6:
-            mag = mag / mag_norm
         if not filt.attitude_initialized:
-            filt.initialize_attitude_triad(mag)
+            if mag_norm > 1e-6:
+                filt._init_mag_accum += mag
+                filt._init_mag_n += 1
+                filt.initialize_attitude_triad(mag / mag_norm)
 
         _mag_rate_ok = t_last_mag is None or (t - t_last_mag) >= 1.0 / _mag_freq
         if _use_mag and filt.attitude_initialized and _mag_rate_ok and (prev_mag is None or not np.allclose(prev_mag, mag)):
