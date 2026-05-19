@@ -1,5 +1,5 @@
-﻿numpy>=1.24
+numpy>=1.24
 scipy>=1.10
-pylie @ git+https://github.com/AlessandroFornasier/pylie.git
-matplotlib>=3.8,<4
+matplotlib>=3.8
 pandas>=2.0
+pylie @ git+https://github.com/AlessandroFornasier/pylie.git

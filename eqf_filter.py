@@ -28,7 +28,7 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 DATASET = "full"
 
 GNSS_UPDATE_FREQ_HZ = 1   # GNSS update frequency (Hz) — update every 1/f seconds
-MAG_UPDATE_FREQ_HZ  = 0.5   # Magnetometer update frequency (Hz)
+MAG_UPDATE_FREQ_HZ  = 1000   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
 USE_GNSS_UPDATE       = True
@@ -51,27 +51,29 @@ N[3, 4] = 1.0
 # =============================================================================
 # --- State Covariance (P) ---
 P_0_blocks = [
-    (1)**2 * np.eye(3),       # [0:3] attitude error (rad²) 
-    (10.0)**2 * np.eye(3),       # [3:6] velocity error (m/s)²
-    (1.0)**2 * np.eye(3),      # [6:9] position error (m²)
-    (0.01)**2 * np.eye(3),     # [9:12] gyro bias error (rad/s)²
-    (0.01)**2 * np.eye(3),      # [12:15] accel bias error (m/s²)² - tight initial
-    1e-9 * np.eye(3)           # [15:18] virtual accel bias (frozen at zero)
+    (1)**2 * np.eye(3),       # [0:3] attitude error (rad²)
+    (10.0)**2 * np.eye(3),    # [3:6] velocity error (m/s)²
+    (5.0)**2 * np.eye(3),     # [6:9] position error (m²)  — C++ uses 5²
+    (0.01)**2 * np.eye(3),    # [9:12] gyro bias error (rad/s)²
+    (2.0)**2 * np.eye(3),     # [12:15] accel bias error (m/s²)²  — C++ uses 2²; was 0.01²
+    (0.5)**2 * np.eye(3)      # [15:18] virtual accel bias  — C++ uses 0.5²; was 1e-9
 ]
 
 # --- Process Noise (Q) ---
-Q_gyro_var = 1e-3               # [0:3] rotation process noise
-Q_accel_var = 1e-1                # [3:6] velocity process noise
-Q_virt_var = 1e-2                # [6:9] position process noise
-Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk (very tight)
-Q_accel_bias_var = (1e-5)**2    # [12:15] accel bias random walk (very tight)
-Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
+# NOTE: Q_gyro_var is amplified by ||p||² via Bt=Adj(B) — keep small to avoid
+# position covariance blow-up at high altitude (1000m → ×10^6 coupling).
+Q_gyro_var = 1e-5               # [0:3] rotation process noise (Bt amplifies by ||p||²)
+Q_accel_var = 1e-1              # [3:6] velocity process noise
+Q_virt_var = 1e-4               # [6:9] position process noise
+Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk
+Q_accel_bias_var = 0.1          # [12:15] accel bias random walk — C++ uses 0.1; was (1e-5)²
+Q_virtual_bias_var = 1e-9       # [15:18] virtual accel bias (frozen) — C++ uses 1e-9
 
 # --- Measurement Noise (R) ---
 
 # GNSS measurement noise
-R_gnss_pos_var = 2            # GNSS position measurement variance (m²)
-R_gnss_vel_var = 7.0           # GNSS velocity measurement variance (m/s)²
+R_gnss_pos_var = 0.5            # GNSS position measurement variance (m²)
+R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
 R_mag_var = 1.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
@@ -146,9 +148,8 @@ def blockdiag(*arrs: np.ndarray) -> np.ndarray:
 
 def velocity_action(X:SymGroup, X_inv: SymGroup, U: InputSpace) -> InputSpace:
     """velocity_action taking X_inv (= X.inv()) directly to avoid recomputing the inverse."""
-    X_B     = X.B.as_matrix()
+    X_B = X.B.as_matrix()
     X_B_inv = X_inv.B.as_matrix()
-
     f10 = np.zeros((5, 5))
     f10[0:3, 4:5] = X_B_inv[0:3, 3:4]
     result = InputSpace()
@@ -251,6 +252,7 @@ class TGEqF:
         self._last_accel: np.ndarray | None = None
         self.hard_iron_bias = np.zeros(3)
         self._heading_corrected = False
+        self.current_xi_hat: State = self.xi_hat()
 
         self.ma_window = 10
         self.gyro_buffer = []
@@ -321,11 +323,11 @@ class TGEqF:
         U.w = SO3.wedge(gyro)
         U.a = accel
 
-        xi_hat = self.xi_hat()
-        U.mu = xi_hat.b[6:9, 0:1]
+        self.current_xi_hat = self.xi_hat()
+        U.mu = self.current_xi_hat.b[6:9, 0:1]
         U.tau = np.zeros((9, 1))
 
-        lift = calculate_lift(xi_hat, U)
+        lift = calculate_lift(self.current_xi_hat, U)
 
         A = self.calculate_A(U)
         Phi = np.eye(18) + A * dt if USE_EULER_DISCR else expm(A * dt)
@@ -394,8 +396,7 @@ class TGEqF:
         R_triad = U_t @ Vt_t
 
         # SO3 log innovation: delta = log(R_triad @ R_hat^T)
-        xi_hat = self.xi_hat()
-        R_hat = xi_hat.T.R().as_matrix()
+        R_hat = self.current_xi_hat.T.R().as_matrix()
         R_err = R_triad @ R_hat.T
         U, _, Vt = np.linalg.svd(R_err)
         if np.linalg.det(U @ Vt) < 0:
@@ -420,7 +421,8 @@ class TGEqF:
         if USE_RESET:
             self._reset(K_delta)
 
-        euler_zyx = ScipyRot.from_matrix(self.xi_hat().T.R().as_matrix()).as_euler('ZYX')
+        self.current_xi_hat = self.xi_hat()
+        euler_zyx = ScipyRot.from_matrix(self.current_xi_hat.T.R().as_matrix()).as_euler('ZYX')
         self.mag_euler = np.array([euler_zyx[2], euler_zyx[1], euler_zyx[0]])
         self.mag_update_count += 1
 
@@ -429,8 +431,7 @@ class TGEqF:
         if not self._heading_corrected:
             v_horiz = float(np.linalg.norm(vel_NED[:2]))
             if v_horiz > 3.0:
-                xi_hat_cur = self.xi_hat()
-                R_hat = xi_hat_cur.T.R().as_matrix()
+                R_hat = self.current_xi_hat.T.R().as_matrix()
                 heading_gnss = float(np.arctan2(vel_NED[1], vel_NED[0]))
                 heading_filter = float(np.arctan2(R_hat[1, 0], R_hat[0, 0]))
                 dheading = (heading_gnss - heading_filter + np.pi) % (2 * np.pi) - np.pi
@@ -441,9 +442,9 @@ class TGEqF:
                     print(f"[HeadingCorr] GNSS heading correction: {np.degrees(dheading):+.1f}°")
                 self._heading_corrected = True
 
-        xi_hat = self.xi_hat()
-        pos_est = xi_hat.T.w().as_vector().flatten()
-        vel_est = xi_hat.T.x().as_vector().flatten()
+        self.current_xi_hat = self.xi_hat()
+        pos_est = self.current_xi_hat.T.w().as_vector().flatten()
+        vel_est = self.current_xi_hat.T.x().as_vector().flatten()
 
         delta_u = np.hstack([pos_NED - pos_est, vel_NED - vel_est]).reshape(-1, 1)
 
@@ -500,7 +501,7 @@ class TGEqF:
 
     def output_row(self, t: float) -> list[float]:
         """Extract state as output row [t, p, v, R, euler, b_gyro, b_accel]."""
-        xi_hat = self.xi_hat()
+        xi_hat = self.current_xi_hat
         R = xi_hat.T.R().as_matrix()
         v = col(xi_hat.T.x().as_vector())
         p = col(xi_hat.T.w().as_vector())

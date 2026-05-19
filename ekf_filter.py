@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as ScipyRot
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 1
+GNSS_UPDATE_FREQ_HZ = 0.5
 
 # =============================================================================
 # Constants
@@ -38,16 +38,16 @@ MAG_AXIS_ORDER = np.array([0, 2, 1])
 MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])
 
 # Process noise
-Q_pos        = np.eye(3) * 1e-2
-Q_vel        = np.eye(3) * 1e-1
-Q_att        = np.eye(3) * 1e-2
-Q_gyro_bias  = np.eye(3) * (1e-6)**2
-Q_accel_bias = np.eye(3) * (1e-5)**2
+Q_pos        = np.eye(3) * 1e-2       # position (matches EqF Q_virt_var)
+Q_vel        = np.eye(3) * 1e-1       # velocity (matches EqF Q_accel_var)
+Q_att        = np.eye(3) * 1e-3       # attitude (matches EqF Q_gyro_var)
+Q_gyro_bias  = np.eye(3) * (1e-6)**2  # gyro bias random walk
+Q_accel_bias = np.eye(3) * (1e-5)**2  # accel bias random walk
 
 # Measurement noise
-R_gnss_pos = np.eye(3) * 1.0
-R_gnss_vel = np.eye(3) * 5.0
-R_mag_var  = 100.0   # scalar yaw noise (rad²)
+R_gnss_pos = np.eye(3) * 2.0   # matches EqF R_gnss_pos_var
+R_gnss_vel = np.eye(3) * 7.0   # matches EqF R_gnss_vel_var
+R_mag_var  = 100.0                # matches EqF R_mag_var (rad²)
 
 # =============================================================================
 # Offset frame — avoids ZYX Euler singularity at pitch≈90°

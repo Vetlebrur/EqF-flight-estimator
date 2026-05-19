@@ -1,36 +1,29 @@
 # EqF-flight-estimator
 
-Using equivariant filter framework, can we create a good estimator for flight?
+TG-EqF and EKF for rocket flight estimation, evaluated on the NIMBUS24 sounding rocket.
 
-## NIMBUS24 trajectory + bearing visualisation
-
-This repository now includes a minimal tool to:
-
-- download `20241011_NIMBUS24_Flight_FC_Data.csv` from `icl-rocketry/iclr-data`
-- plot the **full flight trajectory**
-- plot a **bearing model** (where the rocket points through time)
-- replay the whole flight through a simulator scaffold for future live-estimation work
-
-### Quick start
+## Setup
 
 ```bash
-python -m pip install -r requirements.txt
-python flight_analysis.py
+pip install -r requirements.txt
+# or
+uv run python eqf_filter.py
 ```
 
-By default this will:
+## Running
 
-- download the CSV to `data/20241011_NIMBUS24_Flight_FC_Data.csv` (if missing)
-- save plots to:
-  - `outputs/nimbus24_trajectory.png`
-  - `outputs/nimbus24_bearing.png`
-
-### Simulation scaffold for future live estimation
-
-Use `FlightReplaySimulator` in `flight_analysis.py` and pass an object with:
-
-```python
-update(sample: FlightSample) -> object
+```bash
+python eqf_filter.py         # TG-EqF → outputs/tg_eqf_output_full.csv
+python ekf_filter.py         # EKF    → outputs/ekf_output_full.csv
+python compare_filters.py    # plot EqF vs EKF vs GNSS vs FC
+python tests/plot_trajectory.py  # diagnostics: ANIS, ANEES, RMS error vs FC
 ```
 
-That `update(...)` hook is designed so you can plug in your live estimator logic later while replaying recorded flight data sample-by-sample.
+## Data
+
+Put the NIMBUS24 CSV in `data/20241011_NIMBUS24_Flight_FC_Data.csv`.
+
+## Dependencies
+
+Requires `eqf-reference/` to be present (symmetry group implementation).
+`pylie` is installed from GitHub — see `requirements.txt`.
