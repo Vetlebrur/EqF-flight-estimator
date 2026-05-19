@@ -74,7 +74,6 @@ R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
 R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
-# VN200 calibrated AHRS uses 0.04 rad² (~11.5° std). Raw TRIAD from accel+mag is noisier.
 R_mag_var = 1.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
 
 # =============================================================================
@@ -387,7 +386,7 @@ class TGEqF:
             U[:, -1] *= -1
         delta = ScipyRot.from_matrix(U @ Vt).as_rotvec().reshape(3, 1)
 
-        # C = [I_3 | 0_{3×15}]  (same as VN200 MagUpdate)
+        # C = [I_3 | 0_{3×15}]
         C = np.zeros((3, 18))
         C[0:3, 0:3] = np.eye(3)
 
