@@ -441,72 +441,55 @@ if diag_data is not None:
         ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
         ax_anees.fill_between(anees_times, np.maximum(0, anees_mean - anees_std), anees_mean + anees_std,
                              color='red', alpha=0.1, label=f'±1σ: {anees_std:.1f}')
-    # FC-based NEES: interpolate filter state to FC timestamps, normalise by P_0 diagonal
-    # sigma_pos=1 m, sigma_vel=10 m/s, sigma_att=1 rad  (matches P_0 in eqf_filter.py)
-    _sp, _sv, _sa = 1.0, 10.0, 1.0
+    ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
+    ax_anees.set_xlabel('Time [s]', fontsize=11)
+    ax_anees.set_ylabel('ANEES', fontsize=11)
+    ax_anees.set_title('ANEES (filter self-consistency)', fontsize=12, fontweight='bold')
+    ax_anees.legend(fontsize=9, loc='best')
+    ax_anees.grid(True, alpha=0.3)
+
+    # --- Error vs FC: position RMS [m] and attitude RMS [deg] on a shared subplot ---
+    ax_err = fig_diag.add_subplot(2, 2, 4)
+
+    # Position RMS error vs FC (metres)
     if len(fc_pos) > 0 and len(fc_t) > 0:
         _fc_t = np.asarray(fc_t)
         _valid = (np.isfinite(fc_pos).all(axis=1) & (_fc_t >= t[0]) & (_fc_t <= t[-1]))
         _fc_tv = _fc_t[_valid]
         if len(_fc_tv) > 0:
             _p = np.column_stack([np.interp(_fc_tv, t, a) for a in (px, py, pz)])
-            _ep = _p - fc_pos[_valid]
-            ax_anees.plot(_fc_tv, np.sum(_ep**2, axis=1) / (3 * _sp**2),
-                          lw=0.8, color='steelblue', alpha=0.8, label='Pos NEES vs FC')
-            if len(fc_vel) == len(fc_pos):
-                _v = np.column_stack([np.interp(_fc_tv, t, a) for a in (vx, vy, vz)])
-                _ev = _v - fc_vel[_valid]
-                ax_anees.plot(_fc_tv, np.sum(_ev**2, axis=1) / (3 * _sv**2),
-                              lw=0.8, color='darkorange', alpha=0.8, label='Vel NEES vs FC')
+            _ep = _p - fc_pos[_valid]          # [North_err, East_err, Down_err] in metres
+            _pos_rms = np.sqrt(np.mean(_ep**2, axis=1))   # RMS across 3 axes
+            ax_err.plot(_fc_tv, _pos_rms, lw=1.0, color='steelblue', label='Pos RMS error [m]')
+
+    # Attitude RMS error vs FC (degrees) — Euler angle differences per component
     if len(fc_att) > 0 and len(fc_att_t) > 0:
         _fc_ta = np.asarray(fc_att_t)
         _va = (np.isfinite(fc_att).all(axis=1) & (_fc_ta >= t[0]) & (_fc_ta <= t[-1]))
         _fc_tav = _fc_ta[_va]
         if len(_fc_tav) > 0:
-            _dcm = np.column_stack([np.interp(_fc_tav, t, out[:, 7+j]) for j in range(9)]).reshape(-1, 3, 3)
-            _qf  = Rotation.from_matrix(_dcm).as_quat()
-            _qfc = Rotation.from_euler('ZYX', fc_att[_va][:, ::-1]).as_quat()
-            _dot = np.clip(np.abs(np.sum(_qf * _qfc, axis=1)), 0.0, 1.0)
-            _aerr = 2.0 * np.arccos(_dot)
-            ax_anees.plot(_fc_tav, _aerr**2 / _sa**2,
-                          lw=0.8, color='seagreen', alpha=0.8, label='Att NEES vs FC')
-    ax_anees.axhline(y=1.0, color='gray', linestyle='--', linewidth=1, label='Target (1.0)')
+            # filter_euler: [0]=yaw, [1]=pitch, [2]=roll in degrees (ZYX)
+            _filt_yaw   = np.interp(_fc_tav, t, filter_euler[:, 0])
+            _filt_pitch = np.interp(_fc_tav, t, filter_euler[:, 1])
+            _filt_roll  = np.interp(_fc_tav, t, filter_euler[:, 2])
+            # fc_att rows: [roll, pitch, yaw] in radians → degrees
+            _fc_roll  = np.degrees(fc_att[_va, 0])
+            _fc_pitch = np.degrees(fc_att[_va, 1])
+            _fc_yaw   = np.degrees(fc_att[_va, 2])
+            # per-component angular error wrapped to (−180, +180]
+            def _wrap_deg(e): return (e + 180.0) % 360.0 - 180.0
+            _err_r = _wrap_deg(_filt_roll  - _fc_roll)
+            _err_p = _wrap_deg(_filt_pitch - _fc_pitch)
+            _err_y = _wrap_deg(_filt_yaw   - _fc_yaw)
+            _att_rms = np.sqrt((_err_r**2 + _err_p**2 + _err_y**2) / 3.0)
+            ax_err.plot(_fc_tav, _att_rms, lw=1.0, color='seagreen', label='Att RMS error [deg]')
 
-    ax_anees.set_xlabel('Time [s]', fontsize=11)
-    ax_anees.set_ylabel('ANEES Value', fontsize=11)
-    ax_anees.set_title('ANEES vs FC (pos/vel/att, normalised by P_0)', fontsize=12, fontweight='bold')
-    ax_anees.legend(fontsize=9, loc='best')
-    ax_anees.grid(True, alpha=0.3)
+    ax_err.set_xlabel('Time [s]', fontsize=11)
+    ax_err.set_ylabel('RMS Error', fontsize=11)
+    ax_err.set_title('RMS Error vs FC — Pos [m] & Att [deg]', fontsize=12, fontweight='bold')
+    ax_err.legend(fontsize=9)
+    ax_err.grid(True, alpha=0.3)
 
-    # Statistics summary
-    ax_stats = fig_diag.add_subplot(2, 2, 4)
-    ax_stats.axis('off')
-    stats_text = "Filter Diagnostic Summary\n" + "="*40 + "\n\n"
-    if anis_times:
-        stats_text += f"ANIS Statistics:\n"
-        stats_text += f"  Mean:      {np.mean(anis_vals):.4f}\n"
-        stats_text += f"  Std Dev:   {np.std(anis_vals):.4f}\n"
-        stats_text += f"  Min:       {np.min(anis_vals):.4f}\n"
-        stats_text += f"  25th %ile: {np.percentile(anis_vals, 25):.4f}\n"
-        stats_text += f"  Median:    {np.percentile(anis_vals, 50):.4f}\n"
-        stats_text += f"  75th %ile: {np.percentile(anis_vals, 75):.4f}\n"
-        stats_text += f"  95th %ile: {np.percentile(anis_vals, 95):.4f}\n"
-        stats_text += f"  Max:       {np.max(anis_vals):.4f}\n"
-    stats_text += "\n"
-    if anees_times:
-        stats_text += f"ANEES Statistics:\n"
-        stats_text += f"  Mean:      {np.mean(anees_vals):.2f}\n"
-        stats_text += f"  Std Dev:   {np.std(anees_vals):.2f}\n"
-        stats_text += f"  Min:       {np.min(anees_vals):.2f}\n"
-        stats_text += f"  25th %ile: {np.percentile(anees_vals, 25):.2f}\n"
-        stats_text += f"  Median:    {np.percentile(anees_vals, 50):.2f}\n"
-        stats_text += f"  75th %ile: {np.percentile(anees_vals, 75):.2f}\n"
-        stats_text += f"  95th %ile: {np.percentile(anees_vals, 95):.2f}\n"
-        stats_text += f"  Max:       {np.max(anees_vals):.2f}\n"
-
-    ax_stats.text(0.05, 0.95, stats_text, transform=ax_stats.transAxes,
-                 fontsize=10, verticalalignment='top', fontfamily='monospace',
-                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     fig_diag.suptitle(f'Filter Diagnostics - {data_type}', fontsize=14, fontweight='bold')
     plt.tight_layout(rect=(0, 0, 1, 0.97))

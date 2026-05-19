@@ -16,7 +16,7 @@ sys.path.insert(0, str(ref_path))
 utils_path = ref_path / "Utils"
 sys.path.insert(0, str(utils_path))
 from matrix_math import *
-from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction, velocityAction
+from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace, stateAction
 
 # =============================================================================
 # Configuration
@@ -27,12 +27,12 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 0.1   # GNSS update frequency (Hz) — update every 1/f seconds
-MAG_UPDATE_FREQ_HZ  = 1.0   # Magnetometer update frequency (Hz)
+GNSS_UPDATE_FREQ_HZ = 1   # GNSS update frequency (Hz) — update every 1/f seconds
+MAG_UPDATE_FREQ_HZ  = 0.5   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
 USE_GNSS_UPDATE       = True
-USE_MAG_UPDATE        = False
+USE_MAG_UPDATE        = True
 USE_MA_FILTER         = False   # Moving average pre-filter on gyro/accel (window=5)
 USE_EULER_DISCR       = False  # Euler discretization of A (Φ=I+A·dt) instead of expm(A·dt)
 USE_RESET             = True   # post-update covariance reset on Lie group manifold (arXiv:2309.03765)
@@ -70,8 +70,8 @@ Q_virtual_bias_var = 1e-7      # [15:18] virtual accel bias (frozen)
 # --- Measurement Noise (R) ---
 
 # GNSS measurement noise
-R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
-R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
+R_gnss_pos_var = 2            # GNSS position measurement variance (m²)
+R_gnss_vel_var = 7.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
 R_mag_var = 1.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
@@ -143,6 +143,21 @@ def blockdiag(*arrs: np.ndarray) -> np.ndarray:
         r += rr
         c += cc
     return out
+
+def velocity_action(X:SymGroup, X_inv: SymGroup, U: InputSpace) -> InputSpace:
+    """velocity_action taking X_inv (= X.inv()) directly to avoid recomputing the inverse."""
+    X_B     = X.B.as_matrix()
+    X_B_inv = X_inv.B.as_matrix()
+
+    f10 = np.zeros((5, 5))
+    f10[0:3, 4:5] = X_B_inv[0:3, 3:4]
+    result = InputSpace()
+    w_a_mu = SE23.vee(X_B_inv @ (U.as_W_mat() - X_inv.beta) @ X_B + f10)
+    result.w   = SO3.wedge(w_a_mu[0:3, 0:1])
+    result.a   = w_a_mu[3:6, 0:1]
+    result.mu  = w_a_mu[6:9, 0:1]
+    result.tau = SE23.vee(X_B_inv @ SE23.wedge(U.tau) @ X_B)
+    return result
 
 # =============================================================================
 # Symmetry Lift
@@ -235,6 +250,7 @@ class TGEqF:
         self._init_mag_n = 0
         self._last_accel: np.ndarray | None = None
         self.hard_iron_bias = np.zeros(3)
+        self._heading_corrected = False
 
         self.ma_window = 10
         self.gyro_buffer = []
@@ -409,6 +425,22 @@ class TGEqF:
         self.mag_update_count += 1
 
     def GNSS_update(self, pos_NED: np.ndarray, vel_NED: np.ndarray, t: float | None = None) -> None:
+        # One-time yaw correction: align filter heading with GNSS velocity heading
+        if not self._heading_corrected:
+            v_horiz = float(np.linalg.norm(vel_NED[:2]))
+            if v_horiz > 3.0:
+                xi_hat_cur = self.xi_hat()
+                R_hat = xi_hat_cur.T.R().as_matrix()
+                heading_gnss = float(np.arctan2(vel_NED[1], vel_NED[0]))
+                heading_filter = float(np.arctan2(R_hat[1, 0], R_hat[0, 0]))
+                dheading = (heading_gnss - heading_filter + np.pi) % (2 * np.pi) - np.pi
+                if abs(dheading) > np.radians(3.0):
+                    Delta = np.zeros((18, 1))
+                    Delta[2, 0] = dheading
+                    self.X_hat = SymGroup.exp(Delta) * self.X_hat
+                    print(f"[HeadingCorr] GNSS heading correction: {np.degrees(dheading):+.1f}°")
+                self._heading_corrected = True
+
         xi_hat = self.xi_hat()
         pos_est = xi_hat.T.w().as_vector().flatten()
         vel_est = xi_hat.T.x().as_vector().flatten()
@@ -486,11 +518,11 @@ class TGEqF:
         ]
     
     # =============================================================================
-    # Propagation Jacobians
+    # Propagation and Update Matrices
     # =============================================================================
 
     def calculate_A(self, u: InputSpace) -> np.ndarray:
-        u_0 = velocityAction(self.X_hat.inv(), u)
+        u_0 = velocity_action(self.X_hat,self.X_hat.inv(), u)
         _2A =  np.block([
             [np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 3))],
             [SO3.wedge(col((0,0,g))), np.zeros((3, 3)), np.zeros((3,3))],
