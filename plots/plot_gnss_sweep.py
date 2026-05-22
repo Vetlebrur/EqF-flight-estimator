@@ -157,12 +157,17 @@ for path in csv_files:
 
 print(f"\n{len(runs)} runs loaded.")
 
-# Select 3 representative runs (first, middle, last)
-_n = len(runs)
-_sel = [0, _n // 2, _n - 1] if _n >= 3 else list(range(_n))
-plot_runs = [runs[i] for i in _sel]
+# Select representative runs by frequency (fallback to first/middle/last)
+PLOT_FREQS = {0.05, 1.0, 10.0}
+plot_runs = [(f, d) for f, d in runs if f in PLOT_FREQS]
+if len(plot_runs) < 2:
+    _n = len(runs)
+    _sel = [0, _n // 2, _n - 1] if _n >= 3 else list(range(_n))
+    plot_runs = [runs[i] for i in _sel]
 
-# Colormap spread across the full range so colours contrast well
+_n = len(runs)
+_all_freqs = [f for f, _ in runs]
+_sel = [_all_freqs.index(f) for f, _ in plot_runs if f in _all_freqs]
 cmap        = cm.get_cmap("plasma", _n)
 plot_colors = [cmap(i) for i in _sel]
 

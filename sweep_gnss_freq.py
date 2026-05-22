@@ -1,11 +1,11 @@
-"""Sweep GNSS_UPDATE_FREQ_HZ from 0.05 to 10 Hz and save outputs to outputs/gnss_freq_sweep/."""
+"""Sweep GNSS_UPDATE_FREQ_HZ from 0.2 to 10 Hz and save outputs to outputs/gnss_freq_sweep/."""
 
 import numpy as np
 from pathlib import Path
 
 import eqf_filter
 
-FREQS_HZ = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+FREQS_HZ = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
 
 SWEEP_DIR = Path("outputs/gnss_freq_sweep")
 SWEEP_DIR.mkdir(parents=True, exist_ok=True)

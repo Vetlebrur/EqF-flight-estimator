@@ -1,4 +1,4 @@
-"""TG-EqF inertial/GNSS filter on SE₂(3) using pylie."""
+"""TG-EqF inertial/GNSS filter on SE₂(3) |x se₂(3) using pylie."""
 
 import os
 import sys
@@ -27,7 +27,7 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv  (first 1 s looped for 30 s)
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 1   # GNSS update frequency (Hz) — update every 1/f seconds
+GNSS_UPDATE_FREQ_HZ = 0.1   # GNSS update frequency (Hz) — update every 1/f seconds
 MAG_UPDATE_FREQ_HZ  = 1000   # Magnetometer update frequency (Hz)
 
 # --- Update toggles ---
@@ -53,30 +53,29 @@ N[3, 4] = 1.0
 P_0_blocks = [
     (1)**2 * np.eye(3),       # [0:3] attitude error (rad²)
     (10.0)**2 * np.eye(3),    # [3:6] velocity error (m/s)²
-    (5.0)**2 * np.eye(3),     # [6:9] position error (m²)  — C++ uses 5²
+    (2.0)**2 * np.eye(3),     # [6:9] position error (m²)  
     (0.01)**2 * np.eye(3),    # [9:12] gyro bias error (rad/s)²
-    (2.0)**2 * np.eye(3),     # [12:15] accel bias error (m/s²)²  — C++ uses 2²; was 0.01²
-    (0.5)**2 * np.eye(3)      # [15:18] virtual accel bias  — C++ uses 0.5²; was 1e-9
+    (2.0)**2 * np.eye(3),     # [12:15] accel bias error (m/s²)²  
+    (0.5)**2 * np.eye(3)      # [15:18] virtual bias error (m/s²)²
 ]
 
 # --- Process Noise (Q) ---
-# NOTE: Q_gyro_var is amplified by ||p||² via Bt=Adj(B) — keep small to avoid
 # position covariance blow-up at high altitude (1000m → ×10^6 coupling).
-Q_gyro_var = 1e-5               # [0:3] rotation process noise (Bt amplifies by ||p||²)
-Q_accel_var = 1e-1              # [3:6] velocity process noise
-Q_virt_var = 1e-4               # [6:9] position process noise
+Q_gyro_var = 1e-3               # [0:3] rotation process noise (Bt amplifies by ||p||²)
+Q_accel_var = 1e-1              # [3:6] Accel process noise
+Q_virt_var = 1e-2               # [6:9] virtual process noise
 Q_gyro_bias_var = (1e-6)**2     # [9:12] gyro bias random walk
-Q_accel_bias_var = 0.1          # [12:15] accel bias random walk — C++ uses 0.1; was (1e-5)²
-Q_virtual_bias_var = 1e-9       # [15:18] virtual accel bias (frozen) — C++ uses 1e-9
+Q_accel_bias_var = (1e-5)**2         # [12:15] accel bias random walk
+Q_virtual_bias_var = (1e-7)**2       # [15:18] virtual accel bias (frozen) 
 
 # --- Measurement Noise (R) ---
 
 # GNSS measurement noise
-R_gnss_pos_var = 0.5            # GNSS position measurement variance (m²)
-R_gnss_vel_var = 5.0           # GNSS velocity measurement variance (m/s)²
+R_gnss_pos_var = 1            # GNSS position measurement variance (m²)
+R_gnss_vel_var =5.0           # GNSS velocity measurement variance (m/s)²
 
 # Magnetometer noise: innovation is SO3 log of R_triad @ R_hat^T (radians).
-R_mag_var = 1.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
+R_mag_var = 50.0  # rad²; single-vector rotation: tuned to ANIS ≈ 1.0
 
 # =============================================================================
 # Magnetometer configuration
@@ -127,7 +126,7 @@ def from_two_vectors_rotation(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarra
     cross = np.cross(f, t)
     K = SO3.wedge(cross.reshape(3, 1))
     R = np.eye(3) + K + K @ K / (1.0 + cosine)
-    return R.T  # transpose matches C++ return value
+    return R.T  # Transpose to match body→NED convention
 
 def sym(A: np.ndarray) -> np.ndarray:
     return 0.5 * (A + A.T)
@@ -404,8 +403,8 @@ class TGEqF:
         delta = ScipyRot.from_matrix(U @ Vt).as_rotvec().reshape(3, 1)
 
         # C = [I_3 | 0_{3×15}]
-        C = np.zeros((3, 18))
-        C[0:3, 0:3] = np.eye(3)
+        C = self.calculate_C_mag(delta)
+        C[0:3, 0:3] = np.eye(3) # use identity instead
 
         S = C @ self.Sigma @ C.T + self.R_mag
         K = self.Sigma @ C.T @ np.linalg.inv(S)
@@ -428,7 +427,7 @@ class TGEqF:
 
     def GNSS_update(self, pos_NED: np.ndarray, vel_NED: np.ndarray, t: float | None = None) -> None:
         # One-time yaw correction: align filter heading with GNSS velocity heading
-        if not self._heading_corrected:
+        if not self._heading_corrected and False:
             v_horiz = float(np.linalg.norm(vel_NED[:2]))
             if v_horiz > 3.0:
                 R_hat = self.current_xi_hat.T.R().as_matrix()
