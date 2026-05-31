@@ -26,8 +26,8 @@ from Symmetries.Calibrated.SE23_se23.Symmetry import SymGroup, State, InputSpace
 # "1s_loop" -> data/20241011_NIMBUS24_Flight_FC_Data_1s_loop.csv
 DATASET = "full"
 
-GNSS_UPDATE_FREQ_HZ = 1     # Hz — how often to apply GNSS corrections
-MAG_UPDATE_FREQ_HZ  = 0.5   # Hz — how often to apply magnetometer corrections
+GNSS_UPDATE_FREQ_HZ = 0.1     # Hz — how often to apply GNSS corrections
+MAG_UPDATE_FREQ_HZ  = 0.5  # Hz — how often to apply magnetometer corrections
 
 USE_GNSS_UPDATE = True
 USE_MAG_UPDATE  = True
@@ -59,31 +59,31 @@ _A_UPPER = np.block([                               # upper-left 9×9 block of A
 # =============================================================================
 
 P_0_blocks = [
-    (2.0)**2  * np.eye(3),   # [0:3]   attitude (rad²)
-    (0.5)**2  * np.eye(3),   # [3:6]   velocity (m/s)²
+    (1.0)**2  * np.eye(3),   # [0:3]   attitude (rad²)
+    (10.0)**2 * np.eye(3),   # [3:6]   velocity (m/s)²
     (5.0)**2  * np.eye(3),   # [6:9]   position (m²)
-    (0.02)**2 * np.eye(3),   # [9:12]  gyro bias (rad/s)²
-    (0.02)**2 * np.eye(3),   # [12:15] accel bias (m/s²)²
+    (0.01)**2 * np.eye(3),   # [9:12]  gyro bias (rad/s)²
+    (2.0)**2  * np.eye(3),   # [12:15] accel bias (m/s²)²
     (0.5)**2  * np.eye(3),   # [15:18] virtual bias
 ]
 
-Q_gyro_var         = 1e-1
-Q_accel_var        = 1e-0
-Q_virt_var         = 1.0
-Q_gyro_bias_var    = (1e-3)**2
-Q_accel_bias_var   = (1e-2)**2
+Q_gyro_var         = 1e-5   # kept small — Bt=Adj(B) amplifies by ||p||² at altitude
+Q_accel_var        = 1e-1
+Q_virt_var         = 1e-4
+Q_gyro_bias_var    = (1e-6)**2
+Q_accel_bias_var   = 0.1    # matched to C++ reference; allows fast accel bias adaptation
 Q_virtual_bias_var = (1e-7)**2
 
-R_gnss_pos_var = 1.0   # m²
-R_gnss_vel_var = 10.0  # (m/s)²
-R_mag_var      = 50.0  # rad²
+R_gnss_pos_var = 0.5   # m²
+R_gnss_vel_var = 5.0   # (m/s)²
+R_mag_var      = 1.0   # rad²
 
 # =============================================================================
 # Magnetometer configuration
 # =============================================================================
 
 MAG_AXIS_ORDER = np.array([0, 2, 1])
-MAG_AXIS_SIGNS = np.array([-1.0, 1.0, 1.0])
+MAG_AXIS_SIGNS = np.array([1.0, -1.0, -1.0])
 
 WMM_DECLINATION = -13.4  # degrees West
 WMM_INCLINATION =  56.8  # degrees Down
